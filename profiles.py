@@ -65,6 +65,7 @@ class Profile:
 
 def discover():
     """Находит все профили: .env и .env.<name> (кроме *.example)."""
+    os.makedirs(CONFIG_DIR, exist_ok=True)  # в облаке /data может быть пустым/новым
     found = {}
     default_env = os.path.join(CONFIG_DIR, ".env")
     if os.path.exists(default_env):

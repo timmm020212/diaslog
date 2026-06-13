@@ -458,7 +458,9 @@ async def amain():
     LOOP = asyncio.get_event_loop()
     PROFILES = profiles.discover()
     if not PROFILES:
-        raise SystemExit("Нет профилей. Создай .env (скопируй из .env.example) и заполни ключи.")
+        log.warning("Профилей нет (нет .env в %s). Дашборд поднят, но аккаунтов нет. "
+                    "Через консоль создай .env / .env.friend в этой папке, войди "
+                    "(python main.py [friend]) и перезапусти контейнер.", profiles.CONFIG_DIR)
     for name, prof in PROFILES.items():
         CAPTURERS[name] = Capturer(prof, Store)
 
