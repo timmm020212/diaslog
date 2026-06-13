@@ -13,12 +13,13 @@
 import os
 import sys
 import json
-import base64
+import hmac
+import hashlib
 import asyncio
 import logging
 import threading
 import mimetypes
-from urllib.parse import urlparse, parse_qs, unquote
+from urllib.parse import urlparse, parse_qs, parse_qsl, unquote
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import profiles
@@ -32,7 +33,8 @@ log = logging.getLogger("diaslog.app")
 # В Docker слушаем 0.0.0.0 (порт наружу пробрасывается только на 127.0.0.1 хоста).
 HOST = os.getenv("DIASLOG_HOST", "127.0.0.1")
 PORT = int(os.getenv("DIASLOG_PORT") or os.getenv("PORT") or "8000")
-# Пароль на дашборд. Если задан — требуется Basic-авторизация (обязательно для облака).
+# Пароль на дашборд (для обычного браузера). В Telegram Mini App вместо пароля
+# используется подпись initData — каждый видит только свой аккаунт.
 PASSWORD = os.getenv("DIASLOG_PASSWORD", "")
 
 PROFILES = {}     # name -> Profile
@@ -48,6 +50,7 @@ PAGE = r"""<!doctype html>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=Space+Mono:wght@400;700&family=Manrope:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
   :root{
     --ink:#070a0e; --bg:#0a0e14; --panel:#10151d; --panel2:#141b25;
@@ -190,6 +193,16 @@ PAGE = r"""<!doctype html>
     background:var(--panel2);border:1px solid var(--line2);box-shadow:0 18px 40px -20px #000;
     max-width:340px;animation:rise .35s both}
   .toast.err{border-color:var(--red);color:#ffd2d6} .toast.ok{border-color:var(--cyan-d);color:#bff6ee}
+  #login{display:none;position:fixed;inset:0;z-index:60;align-items:center;justify-content:center;
+    background:rgba(5,8,12,.86);backdrop-filter:blur(6px)}
+  .loginbox{background:var(--panel2);border:1px solid var(--line2);border-radius:16px;padding:26px;
+    width:300px;box-shadow:var(--glow)}
+  .lh{font-family:var(--disp);font-weight:700;letter-spacing:.1em;text-transform:uppercase;margin-bottom:14px}
+  .loginbox input{width:100%;background:var(--bg);border:1px solid var(--line);color:var(--txt);
+    border-radius:10px;padding:11px 13px;font-family:var(--mono);outline:none}
+  .loginbox button{width:100%;margin-top:12px;border:0;border-radius:10px;padding:11px;font-family:var(--disp);
+    font-weight:700;letter-spacing:.08em;text-transform:uppercase;background:var(--cyan);color:#06090d;cursor:pointer}
+  .lhint{color:var(--red);font-family:var(--mono);font-size:12px;margin-top:10px;min-height:14px}
   @media(max-width:680px){.stats{grid-template-columns:repeat(2,1fr)}}
 </style></head>
 <body>
@@ -222,10 +235,27 @@ PAGE = r"""<!doctype html>
 
   <div class="feed" id="feed"><div class="empty"><div class="big">Загрузка…</div></div></div>
 </div>
+<div id="login"><div class="loginbox">
+  <div class="lh">DIASLOG · доступ</div>
+  <input id="pw" type="password" placeholder="Пароль">
+  <button id="pwbtn">Войти</button>
+  <div class="lhint" id="lhint"></div>
+</div></div>
 <div id="toasts"></div>
 
 <script>
+const TG=(window.Telegram&&window.Telegram.WebApp)?window.Telegram.WebApp:null;
+const INIT=TG?TG.initData:"";
+const MINI=!!INIT;
+if(TG){try{TG.ready();TG.expand();}catch(e){}}
+let ADMINPW=sessionStorage.getItem("pw")||"";
 let TYPE="all", Q="", SIG="", SEEN=new Set();
+function authHeaders(){const h={};if(INIT)h["X-Telegram-Init-Data"]=INIT;else if(ADMINPW)h["X-Admin-Password"]=ADMINPW;return h;}
+function authQS(){return INIT?("i="+encodeURIComponent(INIT)):(ADMINPW?("pw="+encodeURIComponent(ADMINPW)):"");}
+function showLogin(){const l=document.getElementById("login");if(l)l.style.display="flex";}
+async function jget(path){const r=await fetch(path,{headers:authHeaders()});
+  if(r.status===401){ if(MINI){toast("Нет доступа для этого аккаунта","err");} else {showLogin();} throw new Error("auth"); }
+  return r;}
 const esc=s=>(s==null?"":String(s)).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
 const ago=t=>{const d=Date.now()/1000-t;
   if(d<60)return"только что"; if(d<3600)return Math.floor(d/60)+" мин";
@@ -235,8 +265,8 @@ function toast(msg,kind){const c=document.getElementById("toasts");
   c.appendChild(el);setTimeout(()=>{el.style.opacity=0;el.style.transition=".4s";setTimeout(()=>el.remove(),400)},4200);}
 
 async function loadStatus(){
-  let d; try{ d=await (await fetch("/api/status")).json(); }catch(e){ return; }
-  document.getElementById("clock").textContent="LIVE · "+new Date().toLocaleTimeString("ru");
+  let d; try{ d=await (await jget("/api/status")).json(); }catch(e){ return; }
+  document.getElementById("clock").textContent=(MINI?"TG · ":"LIVE · ")+new Date().toLocaleTimeString("ru");
   // станции
   const wrap=document.getElementById("stations");
   wrap.innerHTML=d.profiles.map(p=>{
@@ -251,15 +281,14 @@ async function loadStatus(){
       <div class="st-me">${me}</div>${err}
       <div class="st-foot">
         <span class="uptag">${p.configured?"CFG OK":"НЕ НАСТРОЕН"}</span>
-        <button class="toggle ${p.running?'stop':''}" data-n="${p.name}" data-r="${p.running}"
-          ${p.configured?"":"disabled"}>${p.running?'Стоп':'Старт'}</button>
+        ${MINI?"":`<button class="toggle ${p.running?'stop':''}" data-n="${p.name}" data-r="${p.running}" ${p.configured?"":"disabled"}>${p.running?'Стоп':'Старт'}</button>`}
       </div></div>`;
   }).join("");
   wrap.querySelectorAll(".toggle").forEach(b=>b.onclick=async()=>{
     const run=b.dataset.r==="true";
     b.disabled=true;b.textContent=run?"Останавливаю…":"Запускаю…";
     try{
-      const res=await (await fetch("/api/"+(run?"stop":"start")+"?profile="+encodeURIComponent(b.dataset.n),{method:"POST"})).json();
+      const res=await (await fetch("/api/"+(run?"stop":"start")+"?profile="+encodeURIComponent(b.dataset.n),{method:"POST",headers:authHeaders()})).json();
       if(res.ok){ toast((run?"Остановлен: ":"Запущен: ")+b.dataset.n,"ok"); }
       else{ toast("Ошибка ["+b.dataset.n+"]: "+(res.error||"неизвестно"),"err"); }
     }catch(e){ toast("Сбой запроса: "+e,"err"); }
@@ -276,7 +305,7 @@ async function loadStatus(){
 }
 
 async function loadFeed(force){
-  let d; try{ d=await (await fetch(`/api/feed?profile=all&type=${TYPE}&q=${encodeURIComponent(Q)}`)).json(); }catch(e){ return; }
+  let d; try{ d=await (await jget(`/api/feed?profile=all&type=${TYPE}&q=${encodeURIComponent(Q)}`)).json(); }catch(e){ return; }
   const top=d.events[0]?d.events[0].id+"@"+d.events[0].profile:"";
   const sig=TYPE+"|"+Q+"|"+top+"|"+d.events.length;
   if(!force && sig===SIG) return; SIG=sig;
@@ -286,7 +315,7 @@ async function loadFeed(force){
   f.innerHTML=d.events.map((e,i)=>{
     const key=e.profile+":"+e.id; const fresh=!SEEN.has(key); SEEN.add(key);
     let media="";
-    if(e.media_file){const u=`/media/${encodeURIComponent(e.profile)}/${encodeURIComponent(e.media_file)}`;
+    if(e.media_file){const _q=authQS();const u=`/media/${encodeURIComponent(e.profile)}/${encodeURIComponent(e.media_file)}`+(_q?("?"+_q):"");
       if(e.media_type==="photo")media=`<img class="m" loading="lazy" src="${u}">`;
       else if(e.media_type==="video"||e.media_type==="video_note")media=`<video class="m" src="${u}" controls></video>`;
       else media=`<a class="file" href="${u}" target="_blank">📎 ${esc(e.media_type||'файл')}</a>`;}
@@ -309,6 +338,16 @@ document.querySelectorAll(".chip").forEach(c=>c.onclick=()=>{
   c.classList.add("act");TYPE=c.dataset.t;loadFeed(true);});
 document.getElementById("q").oninput=e=>{Q=e.target.value;loadFeed(true);};
 
+const pwbtn=document.getElementById("pwbtn");
+if(pwbtn)pwbtn.onclick=()=>{
+  ADMINPW=document.getElementById("pw").value;
+  sessionStorage.setItem("pw",ADMINPW);
+  document.getElementById("login").style.display="none";
+  loadStatus().then(()=>loadFeed(true));
+};
+const pwin=document.getElementById("pw");
+if(pwin)pwin.onkeydown=e=>{ if(e.key==="Enter")pwbtn.click(); };
+
 loadStatus().then(()=>loadFeed(true));
 setInterval(loadFeed,4000);
 setInterval(loadStatus,7000);
@@ -321,23 +360,20 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
-    def _authed(self):
-        if not PASSWORD:
-            return True
-        h = self.headers.get("Authorization", "")
-        if h.startswith("Basic "):
-            try:
-                _, _, pw = base64.b64decode(h[6:]).decode("utf-8").partition(":")
-                return pw == PASSWORD
-            except Exception:
-                return False
-        return False
-
-    def _need_auth(self):
-        self.send_response(401)
-        self.send_header("WWW-Authenticate", 'Basic realm="Diaslog Spy"')
-        self.send_header("Content-Length", "0")
-        self.end_headers()
+    def _scope(self, qs=None):
+        """Кто запрашивает и что ему показывать.
+        ("user", profile_name) — пользователь Telegram Mini App (только свой профиль);
+        ("admin", None)        — вход по паролю в браузере (все профили);
+        None                   — доступа нет (401)."""
+        qs = qs or {}
+        init = self.headers.get("X-Telegram-Init-Data") or qs.get("i", [None])[0]
+        if init:
+            name = validate_init_data(init)
+            return ("user", name) if name else None
+        pw = self.headers.get("X-Admin-Password") or qs.get("pw", [None])[0]
+        if PASSWORD:
+            return ("admin", None) if pw == PASSWORD else None
+        return ("admin", None)  # пароль не задан (локальная отладка)
 
     def _send(self, code, body, ctype="application/json; charset=utf-8"):
         if isinstance(body, (dict, list)):
@@ -351,39 +387,47 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if not self._authed():
-            return self._need_auth()
         u = urlparse(self.path)
         qs = parse_qs(u.query)
-        if u.path == "/":
+        if u.path == "/":  # сама страница без секретов — отдаём всегда (нужно для Mini App)
             return self._send(200, PAGE, "text/html; charset=utf-8")
+        scope = self._scope(qs)
+        if scope is None:
+            return self._send(401, {"error": "auth"})
+        _, only = scope
         if u.path == "/api/status":
-            return self._send(200, {"profiles": status_list()})
+            return self._send(200, {"profiles": status_list(only)})
         if u.path == "/api/feed":
+            sel = only or qs.get("profile", ["all"])[0]
             return self._send(200, {"events": feed_list(
-                qs.get("profile", ["all"])[0], qs.get("type", ["all"])[0],
-                qs.get("q", [""])[0])})
+                sel, qs.get("type", ["all"])[0], qs.get("q", [""])[0])})
         if u.path.startswith("/media/"):
-            return self._serve_media(u.path)
+            return self._serve_media(u.path, only)
         return self._send(404, {"error": "not found"})
 
     def do_POST(self):
-        if not self._authed():
-            return self._need_auth()
         u = urlparse(self.path)
         qs = parse_qs(u.query)
+        scope = self._scope(qs)
+        if scope is None:
+            return self._send(401, {"error": "auth"})
+        _, only = scope
         name = qs.get("profile", [""])[0]
+        if only and name != only:  # пользователь управляет только своим профилем
+            return self._send(403, {"error": "нет доступа"})
         if u.path == "/api/start":
             return self._send(200, control(name, start=True))
         if u.path == "/api/stop":
             return self._send(200, control(name, start=False))
         return self._send(404, {"error": "not found"})
 
-    def _serve_media(self, path):
+    def _serve_media(self, path, only=None):
         parts = path.split("/", 3)  # ['', 'media', profile, basename]
         if len(parts) < 4:
             return self._send(404, {"error": "bad path"})
         pname, fname = unquote(parts[2]), unquote(parts[3])
+        if only and pname != only:
+            return self._send(403, {"error": "нет доступа"})
         prof = PROFILES.get(pname)
         if not prof or "/" in fname or "\\" in fname or ".." in fname:
             return self._send(404, {"error": "bad file"})
@@ -401,9 +445,40 @@ class Handler(BaseHTTPRequestHandler):
 
 
 # ---------------- логика ----------------
-def status_list():
+def validate_init_data(raw):
+    """Проверяет подпись Telegram WebApp initData токенами ботов.
+    Возвращает имя профиля (по owner_id проверенного пользователя) или None."""
+    if not raw:
+        return None
+    try:
+        pairs = dict(parse_qsl(raw, keep_blank_values=True))
+        recv = pairs.pop("hash", None)
+        if not recv:
+            return None
+        check = "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs))
+        uid = json.loads(pairs["user"]).get("id") if pairs.get("user") else None
+        for prof in PROFILES.values():
+            if not prof.bot_token:
+                continue
+            secret = hmac.new(b"WebAppData", prof.bot_token.encode(), hashlib.sha256).digest()
+            calc = hmac.new(secret, check.encode(), hashlib.sha256).hexdigest()
+            if hmac.compare_digest(calc, recv):
+                if uid is None:
+                    return None
+                for n2, p2 in PROFILES.items():
+                    if p2.owner_id and int(p2.owner_id) == int(uid):
+                        return n2
+                return None
+        return None
+    except Exception:
+        return None
+
+
+def status_list(only=None):
     out = []
     for name, prof in PROFILES.items():
+        if only and name != only:
+            continue
         cap = CAPTURERS.get(name)
         out.append({
             "name": name, "label": prof.label,
