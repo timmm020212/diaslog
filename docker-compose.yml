@@ -1,0 +1,15 @@
+services:
+  app:
+    build: .
+    container_name: diaslog-spy
+    environment:
+      - DIASLOG_HOST=0.0.0.0
+      # ОБЯЗАТЕЛЬНО смени пароль (через переменную окружения или тут):
+      - DIASLOG_PASSWORD=${DIASLOG_PASSWORD:-changeme}
+    ports:
+      # Локально: доступ только с этого компа. В облаке порт 8000 публикует сама платформа.
+      - "127.0.0.1:8000:8000"
+    volumes:
+      # Код + .env + сессии (data/, data-friend/) монтируются с хоста и сохраняются.
+      - ./:/app
+    restart: unless-stopped

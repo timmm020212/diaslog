@@ -1,0 +1,11 @@
+# Секреты и данные — НЕ коммитить
+.env
+.env.*
+!.env.example
+!.env.friend.example
+data/
+data-*/
+*.session
+*.session-journal
+__pycache__/
+*.pyc

@@ -1,0 +1,11 @@
+# Секреты и данные НЕ кладём в образ (передаём через volume / переменные окружения)
+.env
+.env.*
+!.env.example
+!.env.friend.example
+data/
+data-*/
+__pycache__/
+*.pyc
+.git/
+docs/
