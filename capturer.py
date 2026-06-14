@@ -1,4 +1,4 @@
-"""Capturer — один аккаунт: юзербот ловит события, бот доставляет, всё пишется в ленту.
+"""Capturer — один аккаунт: юзербот ловит события, бот доставляет их владельцу в Telegram.
 
 Один экземпляр на профиль. start()/stop() управляют подключением.
 В терминале (первый вход) используется start(allow_login=True).
@@ -55,10 +55,6 @@ class Capturer:
             log.warning("[%s] не удалось скачать медиа: %s", self.profile.name, e)
             return None
 
-    @staticmethod
-    def _base(path):
-        return os.path.basename(path) if path else None
-
     # ---------- обработчики ----------
     async def _on_new(self, event):
         if not (event.is_private or event.is_group):
@@ -85,8 +81,6 @@ class Capturer:
                 await self._send_media(media_path, caption)
             else:
                 await self._send_text(caption + "\n(не удалось скачать)")
-            self.store.add_event("viewonce", event.chat_id, chat_title, sname,
-                                 msg.message or "", None, self._base(media_path), kind)
         elif self.profile.cache_media and kind in (
                 "photo", "video", "voice", "video_note", "document"):
             media_path = await self._download(msg)
@@ -118,9 +112,6 @@ class Capturer:
                 if row["media_type"] and not row["text"]:
                     body += f"\n[медиа: {row['media_type']}]"
                 await self._send_text(body)
-            self.store.add_event("deleted", row["chat_id"], row["chat_title"],
-                                 row["sender_name"], row["text"] or "", None,
-                                 self._base(media_path), row["media_type"])
 
     async def _on_edited(self, event):
         if not (event.is_private or event.is_group):
@@ -136,8 +127,6 @@ class Capturer:
                     f"✏ Изменено{where} — {row['sender_name']}\n\n"
                     f"Было:\n{old_text or '(пусто)'}\n\nСтало:\n{new_text or '(пусто)'}"
                 )
-                self.store.add_event("edited", row["chat_id"], row["chat_title"],
-                                     row["sender_name"], new_text, old_text, None, None)
             self.store.update_text(event.chat_id, msg.id, new_text)
         else:
             sender = await event.get_sender()

@@ -1,9 +1,8 @@
-"""Хранилище профиля (SQLite):
-  * messages — кэш входящих (чтобы восстановить удалённые);
-  * events   — лента пойманного (удалённые / изменённые / view-once) для веб-ленты.
+"""Кэш входящих сообщений (SQLite) для одного профиля.
 
-Класс Store используется на стороне захвата (поток с Telethon).
-Функции query_* / stats открывают своё подключение для чтения из веб-сервера.
+Нужен, чтобы восстановить удалённые/изменённые сообщения: входящие складываем сюда,
+а при удалении/правке достаём прежний текст и медиа. Доставка идёт ботом прямо
+в Telegram (см. capturer.py) — отдельного веб-архива больше нет.
 """
 import os
 import time
@@ -12,21 +11,11 @@ import sqlite3
 # ID супергрупп/каналов имеют вид -100xxxxxxxxxx (меньше этого порога).
 CHANNEL_THRESHOLD = -1000000000000
 
-EVENTS_DDL = """
-CREATE TABLE IF NOT EXISTS events (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    type TEXT, chat_id INTEGER, chat_title TEXT,
-    sender_name TEXT, text TEXT, old_text TEXT,
-    media_file TEXT, media_type TEXT, created_at REAL
-)
-"""
-
 
 def _connect(db_path):
     conn = sqlite3.connect(db_path, check_same_thread=False, timeout=10)
     conn.execute("PRAGMA busy_timeout=8000")  # ждать блокировку, а не падать сразу
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(EVENTS_DDL)  # гарантируем таблицу ленты и для чтения тоже
     return conn
 
 
@@ -54,19 +43,8 @@ class Store:
                 )
                 """
             )
-        c.execute(
-            """
-            CREATE TABLE IF NOT EXISTS events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                type TEXT, chat_id INTEGER, chat_title TEXT,
-                sender_name TEXT, text TEXT, old_text TEXT,
-                media_file TEXT, media_type TEXT, created_at REAL
-            )
-            """
-        )
         c.commit()
 
-    # ---- кэш входящих ----
     def save_message(self, chat_id, msg_id, sender_id, sender_name, chat_title,
                      text, media_path, media_type, date):
         self._conn.execute(
@@ -98,27 +76,14 @@ class Store:
                            (text, chat_id, msg_id))
         self._conn.commit()
 
-    # ---- лента событий ----
-    def add_event(self, type_, chat_id, chat_title, sender_name,
-                  text, old_text, media_file, media_type):
-        self._conn.execute(
-            "INSERT INTO events (type, chat_id, chat_title, sender_name, text, "
-            "old_text, media_file, media_type, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
-            (type_, chat_id, chat_title, sender_name, text, old_text,
-             media_file, media_type, time.time()),
-        )
-        self._conn.commit()
-
     def cleanup(self, retention_days):
-        """Чистит старый кэш сообщений. Файлы, на которые ссылается лента, не трогаем."""
+        """Чистит старый кэш сообщений и скачанные медиа старше retention_days."""
         cutoff = time.time() - retention_days * 86400
-        kept = {r[0] for r in self._conn.execute(
-            "SELECT media_file FROM events WHERE media_file IS NOT NULL")}
         rows = self._conn.execute(
             "SELECT media_path FROM messages WHERE created_at < ?", (cutoff,)
         ).fetchall()
         for (path,) in rows:
-            if path and os.path.basename(path) not in kept and os.path.exists(path):
+            if path and os.path.exists(path):
                 try:
                     os.remove(path)
                 except OSError:
@@ -133,74 +98,3 @@ def _msg_row(r):
     keys = ["chat_id", "msg_id", "sender_id", "sender_name", "chat_title",
             "text", "media_path", "media_type", "date"]
     return dict(zip(keys, r))
-
-
-# ---- чтение для веб-сервера (отдельное подключение) ----
-
-_EVENT_KEYS = ["id", "type", "chat_id", "chat_title", "sender_name",
-               "text", "old_text", "media_file", "media_type", "created_at"]
-
-
-# Локальный день события = strftime по (created_at - tz), где tz — смещение в секундах
-# (= new Date().getTimezoneOffset()*60 у браузера). Так границы суток совпадают с тем,
-# что видит пользователь, а контейнер при этом может жить в UTC.
-_LOCAL_DAY = "strftime('%Y-%m-%d', created_at - ?, 'unixepoch')"
-
-
-def query_events(db_path, type_="all", q="", after=0, limit=200, day=None, tz=0):
-    if not os.path.exists(db_path):
-        return []
-    conn = _connect(db_path)
-    try:
-        sql = ("SELECT id, type, chat_id, chat_title, sender_name, text, old_text, "
-               "media_file, media_type, created_at FROM events WHERE id > ?")
-        params = [int(after or 0)]
-        if day:
-            sql += f" AND {_LOCAL_DAY} = ?"
-            params += [int(tz), day]
-        if type_ and type_ != "all":
-            sql += " AND type = ?"
-            params.append(type_)
-        if q:
-            sql += " AND (text LIKE ? OR old_text LIKE ? OR sender_name LIKE ? OR chat_title LIKE ?)"
-            like = f"%{q}%"
-            params += [like, like, like, like]
-        sql += " ORDER BY id DESC LIMIT ?"
-        params.append(int(limit))
-        rows = conn.execute(sql, params).fetchall()
-        return [dict(zip(_EVENT_KEYS, r)) for r in rows]
-    finally:
-        conn.close()
-
-
-def query_days(db_path, tz=0):
-    """Сколько событий в каждом локальном дне. Возвращает {'YYYY-MM-DD': count}."""
-    if not os.path.exists(db_path):
-        return {}
-    conn = _connect(db_path)
-    try:
-        rows = conn.execute(
-            f"SELECT {_LOCAL_DAY} AS day, COUNT(*) FROM events GROUP BY day",
-            (int(tz),),
-        ).fetchall()
-        return {day: n for day, n in rows if day}
-    finally:
-        conn.close()
-
-
-def stats(db_path):
-    out = {"total": 0, "deleted": 0, "edited": 0, "viewonce": 0, "today": 0}
-    if not os.path.exists(db_path):
-        return out
-    conn = _connect(db_path)
-    try:
-        for type_, n in conn.execute("SELECT type, COUNT(*) FROM events GROUP BY type"):
-            out[type_] = n
-            out["total"] += n
-        day_ago = time.time() - 86400
-        out["today"] = conn.execute(
-            "SELECT COUNT(*) FROM events WHERE created_at > ?", (day_ago,)
-        ).fetchone()[0]
-        return out
-    finally:
-        conn.close()
