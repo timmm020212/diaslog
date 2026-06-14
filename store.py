@@ -141,7 +141,13 @@ _EVENT_KEYS = ["id", "type", "chat_id", "chat_title", "sender_name",
                "text", "old_text", "media_file", "media_type", "created_at"]
 
 
-def query_events(db_path, type_="all", q="", after=0, limit=200):
+# Локальный день события = strftime по (created_at - tz), где tz — смещение в секундах
+# (= new Date().getTimezoneOffset()*60 у браузера). Так границы суток совпадают с тем,
+# что видит пользователь, а контейнер при этом может жить в UTC.
+_LOCAL_DAY = "strftime('%Y-%m-%d', created_at - ?, 'unixepoch')"
+
+
+def query_events(db_path, type_="all", q="", after=0, limit=200, day=None, tz=0):
     if not os.path.exists(db_path):
         return []
     conn = _connect(db_path)
@@ -149,6 +155,9 @@ def query_events(db_path, type_="all", q="", after=0, limit=200):
         sql = ("SELECT id, type, chat_id, chat_title, sender_name, text, old_text, "
                "media_file, media_type, created_at FROM events WHERE id > ?")
         params = [int(after or 0)]
+        if day:
+            sql += f" AND {_LOCAL_DAY} = ?"
+            params += [int(tz), day]
         if type_ and type_ != "all":
             sql += " AND type = ?"
             params.append(type_)
@@ -160,6 +169,21 @@ def query_events(db_path, type_="all", q="", after=0, limit=200):
         params.append(int(limit))
         rows = conn.execute(sql, params).fetchall()
         return [dict(zip(_EVENT_KEYS, r)) for r in rows]
+    finally:
+        conn.close()
+
+
+def query_days(db_path, tz=0):
+    """Сколько событий в каждом локальном дне. Возвращает {'YYYY-MM-DD': count}."""
+    if not os.path.exists(db_path):
+        return {}
+    conn = _connect(db_path)
+    try:
+        rows = conn.execute(
+            f"SELECT {_LOCAL_DAY} AS day, COUNT(*) FROM events GROUP BY day",
+            (int(tz),),
+        ).fetchall()
+        return {day: n for day, n in rows if day}
     finally:
         conn.close()
 

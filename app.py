@@ -156,6 +156,19 @@ PAGE = r"""<!doctype html>
   .search input:focus{border-color:var(--cyan-d);box-shadow:0 0 0 3px rgba(47,227,199,.1)}
   .search svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);opacity:.5}
 
+  /* ---------- переключатель дней ---------- */
+  .days{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:-4px 0 18px;
+    overflow-x:auto;padding-bottom:2px}
+  .day{flex:0 0 auto;border:1px solid var(--line);background:var(--panel);color:var(--mut);
+    font-family:var(--disp);font-weight:600;font-size:12.5px;letter-spacing:.04em;
+    padding:7px 13px;border-radius:11px;cursor:pointer;transition:.16s;display:flex;align-items:center;gap:8px;white-space:nowrap}
+  .day:hover{color:var(--txt);border-color:var(--line2)}
+  .day.act{color:#06090d;background:var(--cyan);border-color:var(--cyan)}
+  .day.act .dc{background:rgba(6,9,13,.22);color:#06090d}
+  .day.today:not(.act){color:var(--cyan);border-color:var(--cyan-d)}
+  .day .dc{font-family:var(--mono);font-size:10.5px;background:var(--panel2);color:var(--dim);
+    border-radius:6px;padding:1px 6px;letter-spacing:.02em}
+
   /* ---------- лента ---------- */
   .feed{display:flex;flex-direction:column;gap:12px}
   .ev{position:relative;background:linear-gradient(180deg,var(--panel2),var(--panel));
@@ -233,6 +246,8 @@ PAGE = r"""<!doctype html>
     </div>
   </div>
 
+  <div class="days" id="days"></div>
+
   <div class="feed" id="feed"><div class="empty"><div class="big">Загрузка…</div></div></div>
 </div>
 <div id="login"><div class="loginbox">
@@ -250,6 +265,8 @@ const MINI=!!INIT;
 if(TG){try{TG.ready();TG.expand();}catch(e){}}
 let ADMINPW=sessionStorage.getItem("pw")||"";
 let TYPE="all", Q="", SIG="", SEEN=new Set();
+const TZ=new Date().getTimezoneOffset()*60;   // смещение пояса браузера, сек (для границ суток)
+let DAY="", DAYSIG="";                          // выбранный день (YYYY-MM-DD), "" = ещё не задан
 function authHeaders(){const h={};if(INIT)h["X-Telegram-Init-Data"]=INIT;else if(ADMINPW)h["X-Admin-Password"]=ADMINPW;return h;}
 function authQS(){return INIT?("i="+encodeURIComponent(INIT)):(ADMINPW?("pw="+encodeURIComponent(ADMINPW)):"");}
 function showLogin(){const l=document.getElementById("login");if(l)l.style.display="flex";}
@@ -260,6 +277,14 @@ const esc=s=>(s==null?"":String(s)).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;"
 const ago=t=>{const d=Date.now()/1000-t;
   if(d<60)return"только что"; if(d<3600)return Math.floor(d/60)+" мин";
   if(d<86400)return Math.floor(d/3600)+" ч"; return new Date(t*1000).toLocaleDateString("ru")};
+const pad2=n=>String(n).padStart(2,"0");
+const dayStr=d=>d.getFullYear()+"-"+pad2(d.getMonth()+1)+"-"+pad2(d.getDate());
+function dayLabel(s){
+  const today=dayStr(new Date());
+  const y=new Date(); y.setDate(y.getDate()-1);
+  if(s===today)return"Сегодня"; if(s===dayStr(y))return"Вчера";
+  const[Y,M,D]=s.split("-"); return D+"."+M;
+}
 function toast(msg,kind){const c=document.getElementById("toasts");
   const el=document.createElement("div");el.className="toast "+(kind||"");el.textContent=msg;
   c.appendChild(el);setTimeout(()=>{el.style.opacity=0;el.style.transition=".4s";setTimeout(()=>el.remove(),400)},4200);}
@@ -304,13 +329,38 @@ async function loadStatus(){
        <div class="n">${s[k]}</div><div class="l">${l}</div></div>`).join("");
 }
 
+async function loadDays(){
+  let d; try{ d=await (await jget(`/api/days?profile=all&tz=${TZ}`)).json(); }catch(e){ return; }
+  const today=dayStr(new Date());
+  const map={}; (d.days||[]).forEach(x=>map[x.day]=x.count);
+  if(!(today in map)) map[today]=0;                 // сегодня всегда доступно, даже пустое
+  const days=Object.keys(map).sort().reverse();
+  if(!DAY || !days.includes(DAY)) DAY=days[0];       // по умолчанию — самый новый (сегодня)
+  const sig=DAY+"|"+days.map(s=>s+":"+map[s]).join(",");
+  if(sig===DAYSIG) return; DAYSIG=sig;
+  const box=document.getElementById("days");
+  box.innerHTML=days.map(s=>{
+    const cls=(s===DAY?"act ":"")+(s===today?"today":"");
+    const cnt=map[s]?`<span class="dc">${map[s]}</span>`:"";
+    return `<button class="day ${cls}" data-d="${s}">${dayLabel(s)}${cnt}</button>`;
+  }).join("");
+  box.querySelectorAll(".day").forEach(b=>b.onclick=()=>{
+    if(DAY===b.dataset.d)return;
+    DAY=b.dataset.d; DAYSIG=""; loadDays(); loadFeed(true);
+  });
+}
+
 async function loadFeed(force){
-  let d; try{ d=await (await jget(`/api/feed?profile=all&type=${TYPE}&q=${encodeURIComponent(Q)}`)).json(); }catch(e){ return; }
+  let d; try{ d=await (await jget(`/api/feed?profile=all&type=${TYPE}&q=${encodeURIComponent(Q)}&day=${encodeURIComponent(DAY)}&tz=${TZ}`)).json(); }catch(e){ return; }
   const top=d.events[0]?d.events[0].id+"@"+d.events[0].profile:"";
-  const sig=TYPE+"|"+Q+"|"+top+"|"+d.events.length;
+  const sig=TYPE+"|"+Q+"|"+DAY+"|"+top+"|"+d.events.length;
   if(!force && sig===SIG) return; SIG=sig;
   const f=document.getElementById("feed");
-  if(!d.events.length){f.innerHTML='<div class="empty"><div class="big">Эфир чист</div><div class="sm">пойманного пока нет — жду удалений, правок и одноразовых</div></div>';return}
+  if(!d.events.length){
+    const sm=DAY===dayStr(new Date())
+      ?"за сегодня пока пусто — жду удалений, правок и одноразовых"
+      :"за этот день перехватов нет";
+    f.innerHTML='<div class="empty"><div class="big">Эфир чист</div><div class="sm">'+sm+'</div></div>';return}
   const tags={deleted:"Удалено",edited:"Изменено",viewonce:"Одноразовое"};
   f.innerHTML=d.events.map((e,i)=>{
     const key=e.profile+":"+e.id; const fresh=!SEEN.has(key); SEEN.add(key);
@@ -343,14 +393,15 @@ if(pwbtn)pwbtn.onclick=()=>{
   ADMINPW=document.getElementById("pw").value;
   sessionStorage.setItem("pw",ADMINPW);
   document.getElementById("login").style.display="none";
-  loadStatus().then(()=>loadFeed(true));
+  loadDays().then(()=>{loadStatus();loadFeed(true);});
 };
 const pwin=document.getElementById("pw");
 if(pwin)pwin.onkeydown=e=>{ if(e.key==="Enter")pwbtn.click(); };
 
-loadStatus().then(()=>loadFeed(true));
+loadDays().then(()=>{loadStatus();loadFeed(true);});
 setInterval(loadFeed,4000);
 setInterval(loadStatus,7000);
+setInterval(loadDays,7000);
 </script>
 </body></html>"""
 
@@ -400,7 +451,11 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/feed":
             sel = only or qs.get("profile", ["all"])[0]
             return self._send(200, {"events": feed_list(
-                sel, qs.get("type", ["all"])[0], qs.get("q", [""])[0])})
+                sel, qs.get("type", ["all"])[0], qs.get("q", [""])[0],
+                qs.get("day", [""])[0], _int_qs(qs, "tz"))})
+        if u.path == "/api/days":
+            sel = only or qs.get("profile", ["all"])[0]
+            return self._send(200, {"days": days_list(sel, _int_qs(qs, "tz"))})
         if u.path.startswith("/media/"):
             return self._serve_media(u.path, only)
         return self._send(404, {"error": "not found"})
@@ -491,19 +546,39 @@ def status_list(only=None):
     return out
 
 
-def feed_list(profile_sel, type_, q):
+def _int_qs(qs, key, default=0):
+    try:
+        return int(qs.get(key, [default])[0])
+    except (TypeError, ValueError):
+        return default
+
+
+def feed_list(profile_sel, type_, q, day="", tz=0):
     names = list(PROFILES) if profile_sel in ("all", "") else [profile_sel]
     events = []
     for name in names:
         prof = PROFILES.get(name)
         if not prof:
             continue
-        for e in store.query_events(prof.db_path, type_, q):
+        for e in store.query_events(prof.db_path, type_, q, day=day or None, tz=tz):
             e["profile"] = name
             e["profile_label"] = prof.label
             events.append(e)
     events.sort(key=lambda e: e["created_at"], reverse=True)
     return events[:200]
+
+
+def days_list(profile_sel, tz=0):
+    """Список дней (по всем выбранным профилям) с количеством событий, новые сверху."""
+    names = list(PROFILES) if profile_sel in ("all", "") else [profile_sel]
+    merged = {}
+    for name in names:
+        prof = PROFILES.get(name)
+        if not prof:
+            continue
+        for day, n in store.query_days(prof.db_path, tz).items():
+            merged[day] = merged.get(day, 0) + n
+    return [{"day": d, "count": merged[d]} for d in sorted(merged, reverse=True)]
 
 
 def control(name, start):
