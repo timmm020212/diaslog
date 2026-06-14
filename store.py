@@ -28,7 +28,7 @@ class Store:
     def _init(self):
         c = self._conn
         cols = [r[1] for r in c.execute("PRAGMA table_info(messages)")]
-        if cols and "chat_title" not in cols:
+        if cols and ("chat_title" not in cols or "sender_username" not in cols):
             c.execute("DROP TABLE messages")  # старая схема — пересоздаём (это кэш)
             cols = []
         if not cols:
@@ -36,8 +36,8 @@ class Store:
                 """
                 CREATE TABLE messages (
                     chat_id INTEGER, msg_id INTEGER,
-                    sender_id INTEGER, sender_name TEXT, chat_title TEXT,
-                    text TEXT, media_path TEXT, media_type TEXT,
+                    sender_id INTEGER, sender_name TEXT, sender_username TEXT,
+                    chat_title TEXT, text TEXT, media_path TEXT, media_type TEXT,
                     date TEXT, created_at REAL,
                     PRIMARY KEY (chat_id, msg_id)
                 )
@@ -45,27 +45,27 @@ class Store:
             )
         c.commit()
 
-    def save_message(self, chat_id, msg_id, sender_id, sender_name, chat_title,
-                     text, media_path, media_type, date):
+    def save_message(self, chat_id, msg_id, sender_id, sender_name, sender_username,
+                     chat_title, text, media_path, media_type, date):
         self._conn.execute(
-            "INSERT OR REPLACE INTO messages VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (chat_id, msg_id, sender_id, sender_name, chat_title,
+            "INSERT OR REPLACE INTO messages VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            (chat_id, msg_id, sender_id, sender_name, sender_username, chat_title,
              text, media_path, media_type, date, time.time()),
         )
         self._conn.commit()
 
     def get_message(self, chat_id, msg_id):
         r = self._conn.execute(
-            "SELECT chat_id, msg_id, sender_id, sender_name, chat_title, text, "
-            "media_path, media_type, date FROM messages WHERE chat_id=? AND msg_id=?",
+            "SELECT chat_id, msg_id, sender_id, sender_name, sender_username, chat_title, "
+            "text, media_path, media_type, date FROM messages WHERE chat_id=? AND msg_id=?",
             (chat_id, msg_id),
         ).fetchone()
         return _msg_row(r)
 
     def get_nonchannel_message(self, msg_id):
         r = self._conn.execute(
-            "SELECT chat_id, msg_id, sender_id, sender_name, chat_title, text, "
-            "media_path, media_type, date FROM messages "
+            "SELECT chat_id, msg_id, sender_id, sender_name, sender_username, chat_title, "
+            "text, media_path, media_type, date FROM messages "
             "WHERE msg_id=? AND chat_id > ? ORDER BY created_at DESC LIMIT 1",
             (msg_id, CHANNEL_THRESHOLD),
         ).fetchone()
@@ -95,6 +95,6 @@ class Store:
 def _msg_row(r):
     if not r:
         return None
-    keys = ["chat_id", "msg_id", "sender_id", "sender_name", "chat_title",
-            "text", "media_path", "media_type", "date"]
+    keys = ["chat_id", "msg_id", "sender_id", "sender_name", "sender_username",
+            "chat_title", "text", "media_path", "media_type", "date"]
     return dict(zip(keys, r))

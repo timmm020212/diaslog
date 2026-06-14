@@ -34,7 +34,7 @@ class Capturer:
             return
         try:
             await self.bot_client.send_message(self.profile.owner_id, text,
-                                               parse_mode=None, link_preview=False)
+                                               parse_mode="html", link_preview=False)
         except Exception as e:
             log.warning("[%s] ошибка доставки текста: %s", self.profile.name, e)
 
@@ -43,10 +43,16 @@ class Capturer:
             return
         try:
             await self.bot_client.send_file(self.profile.owner_id, path,
-                                           caption=caption[:1024], parse_mode=None)
+                                           caption=caption[:1024], parse_mode="html")
         except Exception as e:
             log.warning("[%s] ошибка доставки медиа: %s", self.profile.name, e)
-            await self._send_text(caption + "\n(медиа не удалось отправить)")
+            await self._send_text(caption + "\n(медиа не удалось отправить ⚠️)")
+
+    @staticmethod
+    def _quote(text, limit=2000):
+        """Текст в виде HTML-цитаты (или '(пусто)', если текста нет)."""
+        inner = util.html_escape((text or "")[:limit]) or "(пусто)"
+        return f"<blockquote>{inner}</blockquote>"
 
     async def _download(self, msg):
         try:
@@ -61,7 +67,8 @@ class Capturer:
             return
         msg = event.message
         sender = await event.get_sender()
-        sname = util.display_name(sender)
+        sname = util.real_name(sender)
+        uname = util.username_of(sender)
         kind = util.media_kind(msg)
         media_path = None
 
@@ -74,21 +81,21 @@ class Capturer:
             if not event.is_private:
                 return  # в группах одноразовые медиа не ловим
             media_path = await self._download(msg)
-            caption = f"\U0001F441 Одноразовое медиа от {sname}"
-            if msg.message:
-                caption += f"\nПодпись: {msg.message}"
+            head = (f"\U0001F441 {util.mention_html(sname, uname)} прислал(а) "
+                    f"одноразовое {util.media_label(kind)} \U0001F525")
+            caption = head + (f"\n\n{self._quote(msg.message)}" if msg.message else "")
             if media_path:
                 await self._send_media(media_path, caption)
             else:
-                await self._send_text(caption + "\n(не удалось скачать)")
+                await self._send_text(head + "\n(не удалось скачать ⚠️)")
         elif self.profile.cache_media and kind in (
-                "photo", "video", "voice", "video_note", "document"):
+                "photo", "video", "voice", "video_note", "document", "gif"):
             media_path = await self._download(msg)
 
         self.store.save_message(
             chat_id=event.chat_id, msg_id=msg.id,
             sender_id=getattr(sender, "id", None), sender_name=sname,
-            chat_title=chat_title, text=msg.message or "",
+            sender_username=uname, chat_title=chat_title, text=msg.message or "",
             media_path=media_path, media_type=kind, date=str(msg.date),
         )
 
@@ -101,16 +108,16 @@ class Capturer:
                 row = self.store.get_nonchannel_message(msg_id)
             if not row:
                 continue
-            where = f" в «{row['chat_title']}»" if row["chat_title"] else ""
-            body = f"\U0001F5D1 Удалено{where} — {row['sender_name']}"
-            if row["text"]:
-                body += f"\n\n{row['text']}"
+            who = util.mention_html(row["sender_name"], row["sender_username"])
+            where = f" в «{util.html_escape(row['chat_title'])}»" if row["chat_title"] else ""
+            typ = f" ({util.media_label(row['media_type'])})" if row["media_type"] else ""
+            head = f"{who} удалил(а) 1 сообщение{typ}{where} \U0001F5D1"
             media_path = row["media_path"]
             if media_path and os.path.exists(media_path):
-                await self._send_media(media_path, body)
+                caption = head + (f"\n\n{self._quote(row['text'])}" if row["text"] else "")
+                await self._send_media(media_path, caption)
             else:
-                if row["media_type"] and not row["text"]:
-                    body += f"\n[медиа: {row['media_type']}]"
+                body = head + (f"\n\n{self._quote(row['text'])}" if row["text"] else "")
                 await self._send_text(body)
 
     async def _on_edited(self, event):
@@ -122,10 +129,12 @@ class Capturer:
         if row is not None:
             old_text = row["text"] or ""
             if old_text != new_text:
-                where = f" в «{row['chat_title']}»" if row["chat_title"] else ""
+                who = util.mention_html(row["sender_name"], row["sender_username"])
+                where = f" в «{util.html_escape(row['chat_title'])}»" if row["chat_title"] else ""
                 await self._send_text(
-                    f"✏ Изменено{where} — {row['sender_name']}\n\n"
-                    f"Было:\n{old_text or '(пусто)'}\n\nСтало:\n{new_text or '(пусто)'}"
+                    f"✏️ {who} изменил(а) сообщение{where}\n\n"
+                    f"Было:\n{self._quote(old_text)}\n"
+                    f"Стало:\n{self._quote(new_text)}"
                 )
             self.store.update_text(event.chat_id, msg.id, new_text)
         else:
@@ -136,14 +145,21 @@ class Capturer:
                 chat_title = getattr(chat, "title", None)
             self.store.save_message(
                 event.chat_id, msg.id, getattr(sender, "id", None),
-                util.display_name(sender), chat_title, new_text, None,
-                util.media_kind(msg), str(msg.date),
+                util.real_name(sender), util.username_of(sender), chat_title,
+                new_text, None, util.media_kind(msg), str(msg.date),
             )
 
     async def _on_bot_start(self, event):
         await event.reply(
-            f"Привет! Это бот-доставщик Diaslog Spy.\n\nТвой ID: {event.sender_id}\n"
-            f"Впиши его в .env как OWNER_ID и перезапусти."
+            "\U0001F575 Привет! Я бот <b>Diaslog Spy</b>.\n\n"
+            "Я приношу тебе то, что пытаются скрыть в Telegram:\n"
+            "\U0001F5D1 удалённые сообщения\n"
+            "✏️ изменённые сообщения\n"
+            "\U0001F441 одноразовые фото и видео\n\n"
+            f"\U0001F194 Твой ID: <code>{event.sender_id}</code>\n"
+            "Впиши его в .env как <b>OWNER_ID</b> и перезапусти — "
+            "и я начну присылать перехваты сюда.",
+            parse_mode="html",
         )
 
     # ---------- жизненный цикл ----------
