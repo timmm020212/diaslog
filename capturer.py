@@ -151,14 +151,11 @@ class Capturer:
 
     async def _on_bot_start(self, event):
         await event.reply(
-            "\U0001F575 Привет! Я бот <b>Diaslog Spy</b>.\n\n"
+            "\U0001F575 Привет! Это <b>DIASLOG INTERCEPT</b>.\n\n"
             "Я приношу тебе то, что пытаются скрыть в Telegram:\n"
             "\U0001F5D1 удалённые сообщения\n"
             "✏️ изменённые сообщения\n"
-            "\U0001F441 одноразовые фото и видео\n\n"
-            f"\U0001F194 Твой ID: <code>{event.sender_id}</code>\n"
-            "Впиши его в .env как <b>OWNER_ID</b> и перезапусти — "
-            "и я начну присылать перехваты сюда.",
+            "\U0001F441 одноразовые фото и видео",
             parse_mode="html",
         )
 
