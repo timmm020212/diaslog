@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 !.env.friend.example
+!.env.bot.example
 data/
 data-*/
 *.session

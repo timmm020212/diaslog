@@ -1,8 +1,11 @@
-"""Capturer — один аккаунт: юзербот ловит события, бот доставляет их владельцу в Telegram.
+"""Capturer — один аккаунт: юзербот ловит события, общий бот доставляет их владельцу.
 
-Один экземпляр на профиль. start()/stop() управляют подключением.
+Один экземпляр на профиль. Бот-доставщик ОДИН на всех — создаётся снаружи (run.py)
+и передаётся в конструктор; каждый Capturer шлёт перехваты своему owner_id, поэтому
+у разных владельцев в одном боте только свои уведомления.
+
+start()/stop() управляют только юзербот-подключением (бот живёт отдельно).
 В терминале (первый вход) используется start(allow_login=True).
-В веб-режиме — start() с уже готовой сессией.
 """
 import os
 import asyncio
@@ -16,12 +19,12 @@ log = logging.getLogger("diaslog.capturer")
 
 
 class Capturer:
-    def __init__(self, profile, store_factory):
+    def __init__(self, profile, store_factory, bot_client=None):
         self.profile = profile
         self._store_factory = store_factory  # вызывается в потоке с циклом asyncio
+        self.bot_client = bot_client  # общий бот-доставщик (один на всех); None при входе
         self.store = None
         self.user_client = None
-        self.bot_client = None
         self.running = False
         self.me_name = None
         self.last_error = None
@@ -29,8 +32,7 @@ class Capturer:
 
     # ---------- доставка через бота ----------
     async def _send_text(self, text):
-        if not self.profile.owner_id:
-            log.warning("[%s] OWNER_ID не задан — напиши боту /start", self.profile.name)
+        if not self.bot_client or not self.profile.owner_id:
             return
         try:
             await self.bot_client.send_message(self.profile.owner_id, text,
@@ -39,7 +41,7 @@ class Capturer:
             log.warning("[%s] ошибка доставки текста: %s", self.profile.name, e)
 
     async def _send_media(self, path, caption):
-        if not self.profile.owner_id:
+        if not self.bot_client or not self.profile.owner_id:
             return
         try:
             await self.bot_client.send_file(self.profile.owner_id, path,
@@ -149,16 +151,6 @@ class Capturer:
                 new_text, None, util.media_kind(msg), str(msg.date),
             )
 
-    async def _on_bot_start(self, event):
-        await event.reply(
-            "\U0001F575 Привет! Это <b>DIASLOG INTERCEPT</b>.\n\n"
-            "Я приношу тебе то, что пытаются скрыть в Telegram:\n"
-            "\U0001F5D1 удалённые сообщения\n"
-            "✏️ изменённые сообщения\n"
-            "\U0001F441 одноразовые фото и видео",
-            parse_mode="html",
-        )
-
     # ---------- жизненный цикл ----------
     async def start(self, allow_login=False):
         if self.running:
@@ -167,15 +159,10 @@ class Capturer:
         self.store = self._store_factory(self.profile.db_path)
         self.user_client = TelegramClient(
             self.profile.user_session, self.profile.api_id, self.profile.api_hash)
-        self.bot_client = TelegramClient(
-            self.profile.bot_session, self.profile.api_id, self.profile.api_hash)
 
         self.user_client.add_event_handler(self._on_new, events.NewMessage(incoming=True))
         self.user_client.add_event_handler(self._on_deleted, events.MessageDeleted())
         self.user_client.add_event_handler(self._on_edited, events.MessageEdited(incoming=True))
-        self.bot_client.add_event_handler(self._on_bot_start, events.NewMessage(pattern="/start"))
-
-        await self.bot_client.start(bot_token=self.profile.bot_token)
 
         if allow_login:
             await self.user_client.start()  # интерактивный вход (терминал)
@@ -183,7 +170,6 @@ class Capturer:
             await self.user_client.connect()
             if not await self.user_client.is_user_authorized():
                 await self.user_client.disconnect()
-                await self.bot_client.disconnect()
                 self.last_error = "Нет сессии. Войди один раз через терминал: python main.py " + (
                     "" if self.profile.name == "default" else self.profile.name)
                 raise RuntimeError(self.last_error)
@@ -194,12 +180,14 @@ class Capturer:
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
         log.info("[%s] запущен как %s", self.profile.name, self.me_name)
 
-        if self.profile.owner_id:
+        if self.bot_client and self.profile.owner_id:
             try:
                 await self.bot_client.send_message(
-                    self.profile.owner_id, "✅ Diaslog Spy bot запущен и следит за чатами.")
+                    self.profile.owner_id,
+                    f"✅ Слежу за аккаунтом <b>{util.html_escape(self.me_name)}</b> "
+                    f"— перехваты буду присылать сюда.", parse_mode="html")
             except Exception as e:
-                log.warning("[%s] не написать владельцу (нажми /start): %s",
+                log.warning("[%s] не написать владельцу (пусть нажмёт /start боту): %s",
                             self.profile.name, e)
 
     async def stop(self):
@@ -210,10 +198,6 @@ class Capturer:
             self._cleanup_task.cancel()
         try:
             await self.user_client.disconnect()
-        except Exception:
-            pass
-        try:
-            await self.bot_client.disconnect()
         except Exception:
             pass
         log.info("[%s] остановлен", self.profile.name)

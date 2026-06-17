@@ -1,15 +1,19 @@
 """Терминальный режим (нужен для ПЕРВОГО входа в аккаунт).
 
-  python main.py            — профиль по умолчанию (.env)
-  python main.py friend     — профиль friend (.env.friend)
+  python main.py            — аккаунт по умолчанию (.env)
+  python main.py friend     — аккаунт friend (.env.friend)
 
 После того как вход выполнен хотя бы раз (сессия сохранена в data/), все аккаунты
 разом поднимаются раннером:  python run.py
+
+Доставку делает общий бот (.env.bot). Если он уже настроен — перехваты идут и здесь.
 """
 import os
 import sys
 import asyncio
 import logging
+
+from telethon import TelegramClient
 
 import profiles
 from store import Store
@@ -17,6 +21,18 @@ from capturer import Capturer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger("diaslog")
+
+
+async def _run(profile):
+    bot = None
+    bot_cfg = profiles.load_bot()
+    if bot_cfg and bot_cfg.configured:
+        bot = TelegramClient(bot_cfg.session, bot_cfg.api_id, bot_cfg.api_hash)
+        await bot.start(bot_token=bot_cfg.token)
+    else:
+        log.warning("Общий бот (.env.bot) не настроен — вход выполню, но доставки пока нет.")
+    cap = Capturer(profile, Store, bot_client=bot)
+    await cap.run_terminal()
 
 
 def main():
@@ -28,12 +44,11 @@ def main():
 
     profile = profiles.Profile(name, env_path)
     if not profile.configured:
-        raise SystemExit(f"В {env_file} не заполнены API_ID / API_HASH / BOT_TOKEN.")
+        raise SystemExit(f"В {env_file} не заполнены API_ID / API_HASH.")
 
-    cap = Capturer(profile, Store)
-    log.info("Профиль: %s", profile.label)
+    log.info("Аккаунт: %s", profile.label)
     try:
-        asyncio.run(cap.run_terminal())
+        asyncio.run(_run(profile))
     except KeyboardInterrupt:
         log.info("Остановлено пользователем.")
 
