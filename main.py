@@ -38,9 +38,11 @@ async def _run(profile):
 def main():
     name = sys.argv[1].strip() if len(sys.argv) > 1 else "default"
     env_file = ".env" if name == "default" else f".env.{name}"
-    env_path = os.path.join(profiles.BASE_DIR, env_file)
+    # Читаем оттуда же, где run.py: локально — рядом с кодом, в облаке — с /data.
+    env_path = os.path.join(profiles.CONFIG_DIR, env_file)
     if not os.path.exists(env_path):
-        raise SystemExit(f"Нет файла {env_file}. Скопируй пример и заполни ключи.")
+        raise SystemExit(f"Нет файла {env_file} в {profiles.CONFIG_DIR}. "
+                         "Создай его (см. DEPLOY.md / .env.example) и заполни ключи.")
 
     profile = profiles.Profile(name, env_path)
     if not profile.configured:
