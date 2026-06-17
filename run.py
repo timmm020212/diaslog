@@ -88,6 +88,7 @@ async def amain():
         if data == bot_ui.CB_BACK:
             await event.edit(bot_ui.WELCOME, parse_mode="html",
                              buttons=bot_ui.welcome_buttons())
+            await event.answer()
             return
         entry = registry.get(event.sender_id)
         if entry is None:
@@ -96,12 +97,13 @@ async def amain():
         label, st = entry
         if data == bot_ui.CB_OPEN:
             await show_settings(event, label, st)
+            await event.answer()
             return
         key = bot_ui.parse_toggle(data)
         if key:
             st.toggle(key)
             await show_settings(event, label, st)
-            await event.answer()
+        await event.answer()
 
     bot.add_event_handler(on_start, events.NewMessage(pattern="/start"))
     bot.add_event_handler(on_callback, events.CallbackQuery())
