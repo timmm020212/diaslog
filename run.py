@@ -15,6 +15,7 @@ import logging
 from telethon import TelegramClient, events
 from telethon.tl.functions.bots import SetBotCommandsRequest
 from telethon.tl.types import BotCommand, BotCommandScopeDefault
+from telethon.errors import MessageNotModifiedError, MessageIdInvalidError
 
 import profiles
 import bot_ui
@@ -78,30 +79,34 @@ async def amain():
 
     async def handle_admin(event, action):
         kind, arg = action
-        if kind == "open":
-            await event.edit(bot_ui.admin_text(manager.labels()), parse_mode="html",
-                             buttons=bot_ui.admin_buttons())
-        elif kind == "add":
-            prompt = await manager.begin_add(event.sender_id)
-            await event.edit(prompt, parse_mode="html",
-                             buttons=bot_ui.wizard_cancel_buttons())
-        elif kind == "remove":
-            await event.edit("Выбери аккаунт для удаления:",
-                             buttons=bot_ui.remove_list_buttons(manager.list_items()))
-        elif kind == "rm":
-            cap = manager.accounts.get(arg)
-            label = (cap.me_name if cap else None) or arg
-            await event.edit(f"Точно удалить «{label}»? Сотрутся сессия и кэш.",
-                             buttons=bot_ui.confirm_remove_buttons(arg))
-        elif kind == "rmok":
-            ok = await manager.remove(arg)
-            await event.edit("✅ Аккаунт удалён." if ok else "Аккаунт не найден.",
-                             buttons=bot_ui.admin_buttons())
-        elif kind == "cancel":
-            await manager.cancel(event.sender_id)
-            await event.edit(bot_ui.WELCOME, parse_mode="html",
-                             buttons=bot_ui.welcome_buttons(True))
-        await event.answer()
+        try:
+            if kind == "open":
+                await event.edit(bot_ui.admin_text(manager.labels()), parse_mode="html",
+                                 buttons=bot_ui.admin_buttons())
+            elif kind == "add":
+                prompt = await manager.begin_add(event.sender_id)
+                await event.edit(prompt, parse_mode="html",
+                                 buttons=bot_ui.wizard_cancel_buttons())
+            elif kind == "remove":
+                await event.edit("Выбери аккаунт для удаления:",
+                                 buttons=bot_ui.remove_list_buttons(manager.list_items()))
+            elif kind == "rm":
+                cap = manager.accounts.get(arg)
+                label = (cap.me_name if cap else None) or arg
+                await event.edit(f"Точно удалить «{label}»? Сотрутся сессия и кэш.",
+                                 buttons=bot_ui.confirm_remove_buttons(arg))
+            elif kind == "rmok":
+                ok = await manager.remove(arg)
+                await event.edit("✅ Аккаунт удалён." if ok else "Аккаунт не найден.",
+                                 buttons=bot_ui.admin_buttons())
+            elif kind == "cancel":
+                await manager.cancel(event.sender_id)
+                await event.edit(bot_ui.WELCOME, parse_mode="html",
+                                 buttons=bot_ui.welcome_buttons(True))
+        except (MessageNotModifiedError, MessageIdInvalidError):
+            pass  # сообщение не изменилось/устарело — просто гасим «часики»
+        finally:
+            await event.answer()
 
     async def on_start(event):
         await event.respond(bot_ui.WELCOME, parse_mode="html",
