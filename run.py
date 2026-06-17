@@ -30,15 +30,16 @@ async def amain():
     found = profiles.discover()
     bot_cfg = profiles.load_bot()
 
-    if not found:
-        log.warning("Аккаунтов нет (нет .env в %s). Создай .env / .env.friend, войди "
-                    "(python main.py [friend]) и перезапусти.", profiles.CONFIG_DIR)
-        await asyncio.Event().wait()
-        return
-
     if not bot_cfg or not bot_cfg.configured:
         log.warning("Нет общего бота: создай %s/.env.bot с BOT_TOKEN / API_ID / API_HASH "
                     "и перезапусти.", profiles.CONFIG_DIR)
+        await asyncio.Event().wait()
+        return
+
+    if not found and not bot_cfg.admin_id:
+        log.warning("Аккаунтов нет (нет .env в %s) и ADMIN_ID не задан. Создай .env / "
+                    ".env.friend (или задай ADMIN_ID, чтобы добавлять аккаунты из "
+                    "админ-панели) и перезапусти.", profiles.CONFIG_DIR)
         await asyncio.Event().wait()
         return
 
@@ -150,8 +151,10 @@ async def amain():
             return
         reply = await manager.feed_message(event.sender_id, event.raw_text)
         if reply:
-            await event.respond(reply, parse_mode="html",
-                                buttons=bot_ui.wizard_cancel_buttons())
+            still = event.sender_id in manager.wizards
+            buttons = (bot_ui.wizard_cancel_buttons() if still
+                       else bot_ui.admin_buttons())
+            await event.respond(reply, parse_mode="html", buttons=buttons)
 
     bot.add_event_handler(on_start, events.NewMessage(pattern="/start"))
     bot.add_event_handler(on_callback, events.CallbackQuery())

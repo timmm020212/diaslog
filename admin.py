@@ -159,8 +159,9 @@ class AccountManager:
         except Exception:
             pass
         session_file = os.path.join(profiles.CONFIG_DIR, f".login_{admin_id}.session")
-        try:
-            os.remove(session_file)
-        except OSError:
-            pass
+        for suffix in ("", "-journal", "-wal", "-shm"):
+            try:
+                os.remove(session_file + suffix)
+            except OSError:
+                pass
         return True
