@@ -26,6 +26,34 @@ CB_TOGGLE = {
 }
 
 
+
+# admin callback data
+CB_ADMIN_OPEN = b"admin:open"
+CB_ADMIN_ADD = b"admin:add"
+CB_ADMIN_REMOVE = b"admin:remove"
+CB_ADMIN_CANCEL = b"admin:cancel"
+_ADMIN_RM_PREFIX = b"admin:rm:"
+_ADMIN_RMOK_PREFIX = b"admin:rmok:"
+_ADMIN_SIMPLE = {
+    CB_ADMIN_OPEN: ("open", None),
+    CB_ADMIN_ADD: ("add", None),
+    CB_ADMIN_REMOVE: ("remove", None),
+    CB_ADMIN_CANCEL: ("cancel", None),
+}
+
+
+def parse_admin(data):
+    """Разбор admin-callback: (action, arg) или None.
+    action ∈ open/add/remove/cancel/rm/rmok; arg — имя аккаунта для rm/rmok."""
+    if data in _ADMIN_SIMPLE:
+        return _ADMIN_SIMPLE[data]
+    if data.startswith(_ADMIN_RMOK_PREFIX):
+        return ("rmok", data[len(_ADMIN_RMOK_PREFIX):].decode())
+    if data.startswith(_ADMIN_RM_PREFIX):
+        return ("rm", data[len(_ADMIN_RM_PREFIX):].decode())
+    return None
+
+
 def parse_toggle(data):
     """b'toggle:deleted' -> 'deleted'; для прочего -> None."""
     if data.startswith(_TOGGLE_PREFIX):
@@ -33,8 +61,11 @@ def parse_toggle(data):
     return None
 
 
-def welcome_buttons():
-    return [[Button.inline("⚙️ Настройки", CB_OPEN)]]
+def welcome_buttons(is_admin=False):
+    rows = [[Button.inline("⚙️ Настройки", CB_OPEN)]]
+    if is_admin:
+        rows.append([Button.inline("🛠 Админ-панель", CB_ADMIN_OPEN)])
+    return rows
 
 
 def _mark(on):
@@ -60,3 +91,39 @@ def settings_buttons(s):
          Button.inline(f"👥 Группы {_mark(s.groups)}", CB_TOGGLE["groups"])],
         [Button.inline("◀️ Назад", CB_BACK)],
     ]
+
+
+def admin_text(labels):
+    body = "\n".join(f"• {l}" for l in labels) or "(пусто)"
+    return (
+        "🛠 <b>Админ-панель</b>\n"
+        f"Аккаунтов под наблюдением: {len(labels)}\n\n"
+        f"{body}"
+    )
+
+
+def admin_buttons():
+    return [
+        [Button.inline("➕ Добавить аккаунт", CB_ADMIN_ADD)],
+        [Button.inline("➖ Удалить аккаунт", CB_ADMIN_REMOVE)],
+        [Button.inline("◀️ Назад", CB_BACK)],
+    ]
+
+
+def remove_list_buttons(items):
+    """items: [(name, label)] — кнопка на каждый аккаунт + Назад."""
+    rows = [[Button.inline(f"➖ {label}", _ADMIN_RM_PREFIX + name.encode())]
+            for name, label in items]
+    rows.append([Button.inline("◀️ Назад", CB_ADMIN_OPEN)])
+    return rows
+
+
+def confirm_remove_buttons(name):
+    return [
+        [Button.inline("✅ Да, удалить", _ADMIN_RMOK_PREFIX + name.encode())],
+        [Button.inline("◀️ Отмена", CB_ADMIN_OPEN)],
+    ]
+
+
+def wizard_cancel_buttons():
+    return [[Button.inline("Отмена", CB_ADMIN_CANCEL)]]
