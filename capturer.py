@@ -35,6 +35,7 @@ class Capturer:
         self.running = False
         self.me_name = None
         self.me_id = None  # id самого аккаунта — чтобы не реагировать на свои сообщения
+        self.bot_id = None  # id бота-доставщика — чтобы не ловить его служебные сообщения
         self.last_error = None
         self._cleanup_task = None
 
@@ -75,6 +76,8 @@ class Capturer:
     async def _on_new(self, event):
         if not self.settings.enabled:
             return
+        if self.bot_id is not None and event.chat_id == self.bot_id:
+            return  # чат с самим ботом-доставщиком — его сообщения не перехватываем
         if not (event.is_private or event.is_group):
             return
         if event.is_group and not self.settings.groups:
@@ -130,6 +133,8 @@ class Capturer:
                 row = self.store.get_nonchannel_message(msg_id)
             if not row:
                 continue
+            if self.bot_id is not None and row["sender_id"] == self.bot_id:
+                continue  # сообщение бота-доставщика — не реагируем
             if row["sender_id"] == self.me_id:
                 continue  # своё сообщение — не реагируем на собственные удаления
             if row["chat_title"] and not self.settings.groups:
@@ -149,6 +154,8 @@ class Capturer:
     async def _on_edited(self, event):
         if not self.settings.enabled:
             return
+        if self.bot_id is not None and event.chat_id == self.bot_id:
+            return  # бот-доставщик правит свои сообщения (кнопки/настройки) — не наша добыча
         if not (event.is_private or event.is_group):
             return
         if event.is_group and not self.settings.groups:
@@ -210,6 +217,12 @@ class Capturer:
         me = await self.user_client.get_me()
         self.me_name = util.display_name(me)
         self.me_id = getattr(me, "id", None)
+        if self.bot_client:
+            try:
+                bot_me = await self.bot_client.get_me()
+                self.bot_id = getattr(bot_me, "id", None)
+            except Exception as e:
+                log.warning("[%s] не узнать id бота-доставщика: %s", self.profile.name, e)
         self.running = True
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
         log.info("[%s] запущен как %s", self.profile.name, self.me_name)
