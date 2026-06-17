@@ -35,6 +35,15 @@ async def _safe_answer(event, *args, **kwargs):
         pass
 
 
+async def _safe_edit(event, *args, **kwargs):
+    """Редактирование сообщения, устойчивое к повторному нажатию (двойной тап даёт
+    MessageNotModified/устаревший id) — глотаем эти ошибки."""
+    try:
+        await event.edit(*args, **kwargs)
+    except (MessageNotModifiedError, MessageIdInvalidError):
+        pass
+
+
 async def amain():
     found = profiles.discover()
     bot_cfg = profiles.load_bot()
@@ -120,13 +129,13 @@ async def amain():
         data = event.data
         admin = is_admin(event)
         if data == bot_ui.CB_BACK:
-            await event.edit(bot_ui.WELCOME, parse_mode="html",
+            await _safe_edit(event, bot_ui.WELCOME, parse_mode="html",
                              buttons=bot_ui.welcome_buttons(admin))
             await _safe_answer(event)
             return
         # публичное подключение и отмена — доступно всем
         if data == bot_ui.CB_CONNECT:
-            await event.edit(bot_ui.connect_method_text(), parse_mode="html",
+            await _safe_edit(event, bot_ui.connect_method_text(), parse_mode="html",
                              buttons=bot_ui.connect_method_buttons())
             await _safe_answer(event)
             return
@@ -142,7 +151,7 @@ async def amain():
             return
         if data == bot_ui.CB_ADMIN_CANCEL:
             await manager.cancel(event.sender_id)
-            await event.edit(bot_ui.WELCOME, parse_mode="html",
+            await _safe_edit(event, bot_ui.WELCOME, parse_mode="html",
                              buttons=bot_ui.welcome_buttons(admin))
             await _safe_answer(event)
             return

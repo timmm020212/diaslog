@@ -48,7 +48,7 @@ def test_parse_admin_actions():
     assert bot_ui.parse_admin(b"admin:open") == ("open", None)
     assert bot_ui.parse_admin(b"admin:add") == ("add", None)
     assert bot_ui.parse_admin(b"admin:remove") == ("remove", None)
-    assert bot_ui.parse_admin(b"admin:cancel") == ("cancel", None)
+    assert bot_ui.parse_admin(b"admin:cancel") is None  # handled publicly before parse_admin
     assert bot_ui.parse_admin(b"admin:rm:id5") == ("rm", "id5")
     assert bot_ui.parse_admin(b"admin:rmok:id5") == ("rmok", "id5")
     assert bot_ui.parse_admin(b"toggle:deleted") is None

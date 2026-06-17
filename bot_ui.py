@@ -41,13 +41,12 @@ _ADMIN_SIMPLE = {
     CB_ADMIN_OPEN: ("open", None),
     CB_ADMIN_ADD: ("add", None),
     CB_ADMIN_REMOVE: ("remove", None),
-    CB_ADMIN_CANCEL: ("cancel", None),
 }
 
 
 def parse_admin(data):
     """Разбор admin-callback: (action, arg) или None.
-    action ∈ open/add/remove/cancel/rm/rmok; arg — имя аккаунта для rm/rmok."""
+    action ∈ open/add/remove/rm/rmok; arg — имя аккаунта для rm/rmok."""
     if data in _ADMIN_SIMPLE:
         return _ADMIN_SIMPLE[data]
     if data.startswith(_ADMIN_RMOK_PREFIX):
