@@ -128,6 +128,8 @@ class AccountManager:
             pass
         self.wizards.pop(admin_id, None)
         name = f"id{me.id}"
+        if name in self.accounts:
+            await self.remove(name)  # тот же аккаунт уже есть — снять старый Capturer и его файлы
         env_path = profiles.write_profile_env(
             name, self.bot_cfg.api_id, self.bot_cfg.api_hash, me.id)
         profile = profiles.Profile(name, env_path)  # создаёт data_dir
@@ -136,6 +138,13 @@ class AccountManager:
             os.replace(login_session, profile.user_session + ".session")
         except OSError as e:
             log.warning("перенос сессии: %s", e)
+        for suffix in ("-journal", "-wal", "-shm"):
+            src = login_session + suffix
+            if os.path.exists(src):
+                try:
+                    os.replace(src, profile.user_session + ".session" + suffix)
+                except OSError:
+                    pass
         cap = await self.start_profile(profile)
         label = cap.me_name or name
         return (f"✅ Аккаунт <b>{label}</b> добавлен. Перехваты пойдут владельцу — "
@@ -148,5 +157,10 @@ class AccountManager:
         try:
             await wiz.client.disconnect()
         except Exception:
+            pass
+        session_file = os.path.join(profiles.CONFIG_DIR, f".login_{admin_id}.session")
+        try:
+            os.remove(session_file)
+        except OSError:
             pass
         return True
