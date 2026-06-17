@@ -95,9 +95,7 @@ async def amain():
                 await event.edit(bot_ui.admin_text(manager.labels()), parse_mode="html",
                                  buttons=bot_ui.admin_buttons())
             elif kind == "add":
-                prompt = await manager.begin_add(event.sender_id)
-                await event.edit(prompt, parse_mode="html",
-                                 buttons=bot_ui.wizard_cancel_buttons())
+                await manager.begin_add(event.sender_id)
             elif kind == "remove":
                 await event.edit("Выбери аккаунт для удаления:",
                                  buttons=bot_ui.remove_list_buttons(manager.list_items()))

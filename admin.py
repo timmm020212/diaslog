@@ -1,38 +1,41 @@
 """Админ-панель: добавление/удаление отслеживаемых аккаунтов через бота.
 
-AccountManager владеет жизненным циклом Capturer'ов и визардом входа
-(телефон → код → 2FA). Перехваты добавленного аккаунта идут его владельцу
-(id залогиненного аккаунта). Динамические аккаунты сохраняются как .env.<id>
-на /data, поэтому переживают перезапуск (их подхватывает profiles.discover()).
+Добавление — вход по login-токену Telegram (ссылка tg://login + QR), без SMS-кодов:
+бот шлёт сообщение со ссылкой «Подтвердить вход» и QR того же токена; владелец
+подтверждает вход со своего телефона. Перехваты добавленного аккаунта идут его
+владельцу. Динамические аккаунты сохраняются как .env.<id> на /data (переживают
+перезапуск — их подхватывает profiles.discover()).
 """
 import os
+import io
+import time
+import asyncio
 import logging
 
+import qrcode
 from telethon import TelegramClient
-from telethon.errors import (SessionPasswordNeededError, PhoneCodeInvalidError,
-                             PhoneCodeExpiredError, PhoneNumberInvalidError,
-                             FloodWaitError)
+from telethon.errors import SessionPasswordNeededError
 
 import profiles
+import bot_ui
 from settings import Settings
 from capturer import Capturer
 
 log = logging.getLogger("diaslog.admin")
 
-
-def extract_code(text):
-    """Выпарить цифры кода из 'разбитого' ввода ('1 2 3 4 5' -> '12345')."""
-    return "".join(ch for ch in text if ch.isdigit())
+QR_TOKEN_TIMEOUT = 30   # сек на одно ожидание скана до пересоздания токена
+QR_TOTAL_TIMEOUT = 180  # сек общий лимит на подтверждение входа
 
 
 class Wizard:
-    """Состояние одного входа: клиент Telethon и шаг диалога."""
+    """Состояние одного входа по ссылке/QR."""
 
     def __init__(self, client):
         self.client = client
-        self.phone = None
-        self.phone_code_hash = None
-        self.step = "phone"  # phone -> code -> password
+        self.qr = None       # QRLogin
+        self.qr_msg = None    # сообщение с QR (обновляем при пересоздании токена)
+        self.qr_task = None   # фоновая задача ожидания подтверждения
+        self.step = "qr"      # qr -> password
 
 
 class AccountManager:
@@ -41,7 +44,7 @@ class AccountManager:
         self.bot_cfg = bot_cfg
         self.store_factory = store_factory
         self.accounts = {}    # name -> Capturer
-        self.registry = {}    # owner_id -> (label, Settings) — общий с настройками
+        self.registry = {}    # owner_id -> (label, Settings)
         self.wizards = {}     # admin_id -> Wizard
 
     # ---------- жизненный цикл аккаунтов ----------
@@ -66,59 +69,94 @@ class AccountManager:
         return True
 
     def list_items(self):
-        """[(name, label)] для текста и кнопок."""
         return [(name, cap.me_name or cap.profile.label)
                 for name, cap in self.accounts.items()]
 
     def labels(self):
         return [label for _, label in self.list_items()]
 
-    # ---------- визард добавления ----------
+    # ---------- визард входа по ссылке/QR ----------
+    @staticmethod
+    def _qr_png(url):
+        """PNG-картинка QR из ссылки tg://login (BytesIO для отправки/обновления)."""
+        buf = io.BytesIO()
+        qrcode.make(url).save(buf, "PNG")
+        buf.seek(0)
+        buf.name = "qr.png"
+        return buf
+
+    @staticmethod
+    def _qr_caption(url):
+        return (
+            "Добавление аккаунта — подтверди вход:\n\n"
+            f"• На <b>этом</b> телефоне — нажми <a href=\"{url}\">✅ Подтвердить вход</a>\n"
+            "• С <b>другого</b> устройства — отсканируй QR: "
+            "Настройки → Устройства → Подключить устройство\n\n"
+            "Ссылка живёт ~30 c и обновляется сама."
+        )
+
     async def begin_add(self, admin_id):
-        await self.cancel(admin_id)  # сбросить прежний визард, если был
+        await self.cancel(admin_id)
         session = os.path.join(profiles.CONFIG_DIR, f".login_{admin_id}")
         client = TelegramClient(session, self.bot_cfg.api_id, self.bot_cfg.api_hash)
         await client.connect()
-        self.wizards[admin_id] = Wizard(client)
-        return "Пришли номер телефона аккаунта (с +)."
+        wiz = Wizard(client)
+        self.wizards[admin_id] = wiz
+        try:
+            wiz.qr = await client.qr_login()
+        except Exception as e:
+            await self.cancel(admin_id)
+            await self.bot.send_message(admin_id, f"Не удалось начать вход: {e}")
+            return
+        wiz.qr_msg = await self.bot.send_file(
+            admin_id, self._qr_png(wiz.qr.url), caption=self._qr_caption(wiz.qr.url),
+            parse_mode="html", buttons=bot_ui.wizard_cancel_buttons())
+        wiz.qr_task = asyncio.create_task(self._qr_loop(admin_id, wiz))
+
+    async def _qr_loop(self, admin_id, wiz):
+        end = time.monotonic() + QR_TOTAL_TIMEOUT
+        try:
+            while time.monotonic() < end:
+                try:
+                    await wiz.qr.wait(timeout=QR_TOKEN_TIMEOUT)
+                except asyncio.TimeoutError:
+                    await wiz.qr.recreate()
+                    try:
+                        await wiz.qr_msg.edit(self._qr_caption(wiz.qr.url),
+                                              file=self._qr_png(wiz.qr.url),
+                                              parse_mode="html")
+                    except Exception as e:
+                        log.warning("обновление QR: %s", e)
+                    continue
+                except SessionPasswordNeededError:
+                    wiz.step = "password"
+                    await self.bot.send_message(
+                        admin_id, "У аккаунта включена 2FA. Пришли пароль облака.",
+                        buttons=bot_ui.wizard_cancel_buttons())
+                    return
+                reply = await self._finalize(admin_id, wiz)
+                await self.bot.send_message(admin_id, reply, parse_mode="html")
+                return
+            await self._cleanup(admin_id)
+            await self.bot.send_message(
+                admin_id, "⏳ Время вышло, вход не подтверждён. Нажми ➕ заново.")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning("QR-вход: %s", e)
+            await self._cleanup(admin_id)
+            await self.bot.send_message(admin_id, f"Ошибка входа: {e}. Нажми ➕ заново.")
 
     async def feed_message(self, admin_id, text):
         wiz = self.wizards.get(admin_id)
-        if wiz is None:
+        if wiz is None or wiz.step != "password":
             return None
         try:
-            if wiz.step == "phone":
-                wiz.phone = text.strip()
-                sent = await wiz.client.send_code_request(wiz.phone)
-                wiz.phone_code_hash = sent.phone_code_hash
-                wiz.step = "code"
-                return ("Код отправлен в Telegram. Введи его <b>разбито</b> "
-                        "(например <code>1 2 3 4 5</code>) — иначе Telegram его сожжёт.")
-            if wiz.step == "code":
-                code = extract_code(text)
-                try:
-                    await wiz.client.sign_in(phone=wiz.phone, code=code,
-                                             phone_code_hash=wiz.phone_code_hash)
-                except SessionPasswordNeededError:
-                    wiz.step = "password"
-                    return "У аккаунта включена 2FA. Пришли пароль облака."
-                except (PhoneCodeInvalidError, PhoneCodeExpiredError):
-                    return "Код неверный или истёк. Введи ещё раз (разбито)."
-                return await self._finalize(admin_id, wiz)
-            if wiz.step == "password":
-                await wiz.client.sign_in(password=text.strip())
-                return await self._finalize(admin_id, wiz)
-        except FloodWaitError as e:
-            await self.cancel(admin_id)
-            return f"Telegram просит подождать {e.seconds} c. Попробуй позже."
-        except PhoneNumberInvalidError:
-            await self.cancel(admin_id)
-            return "Неверный номер телефона. Начни заново кнопкой ➕."
+            await wiz.client.sign_in(password=text.strip())
         except Exception as e:
             await self.cancel(admin_id)
-            log.warning("визард входа: %s", e)
-            return f"Ошибка входа: {e}. Начни заново кнопкой ➕."
-        return None
+            return f"Пароль не подошёл: {e}. Нажми ➕ заново."
+        return await self._finalize(admin_id, wiz)
 
     async def _finalize(self, admin_id, wiz):
         me = await wiz.client.get_me()
@@ -129,10 +167,10 @@ class AccountManager:
         self.wizards.pop(admin_id, None)
         name = f"id{me.id}"
         if name in self.accounts:
-            await self.remove(name)  # тот же аккаунт уже есть — снять старый Capturer и его файлы
+            await self.remove(name)
         env_path = profiles.write_profile_env(
             name, self.bot_cfg.api_id, self.bot_cfg.api_hash, me.id)
-        profile = profiles.Profile(name, env_path)  # создаёт data_dir
+        profile = profiles.Profile(name, env_path)
         login_session = os.path.join(profiles.CONFIG_DIR, f".login_{admin_id}.session")
         try:
             os.replace(login_session, profile.user_session + ".session")
@@ -150,18 +188,29 @@ class AccountManager:
         return (f"✅ Аккаунт <b>{label}</b> добавлен. Перехваты пойдут владельцу — "
                 "пусть нажмёт /start этому боту.")
 
-    async def cancel(self, admin_id):
+    async def _cleanup(self, admin_id):
+        """Снять визард и почистить временные файлы. НЕ трогает фоновую задачу
+        (вызывается из самой задачи при таймауте/ошибке — нельзя отменять себя)."""
         wiz = self.wizards.pop(admin_id, None)
         if wiz is None:
-            return False
+            return
         try:
             await wiz.client.disconnect()
         except Exception:
             pass
-        session_file = os.path.join(profiles.CONFIG_DIR, f".login_{admin_id}.session")
+        base = os.path.join(profiles.CONFIG_DIR, f".login_{admin_id}.session")
         for suffix in ("", "-journal", "-wal", "-shm"):
             try:
-                os.remove(session_file + suffix)
+                os.remove(base + suffix)
             except OSError:
                 pass
+
+    async def cancel(self, admin_id):
+        """Отмена снаружи (кнопка/ресет перед новым входом): гасит фоновую задачу."""
+        wiz = self.wizards.get(admin_id)
+        if wiz is None:
+            return False
+        if wiz.qr_task is not None:
+            wiz.qr_task.cancel()
+        await self._cleanup(admin_id)
         return True
