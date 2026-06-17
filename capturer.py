@@ -59,6 +59,16 @@ class Capturer:
             log.warning("[%s] ошибка доставки медиа: %s", self.profile.name, e)
             await self._send_text(caption + "\n(медиа не удалось отправить ⚠️)")
 
+    async def _send_sticker(self, path):
+        """Стикер без подписи (Telegram её у стикеров не показывает) — шапку
+        шлём отдельным сообщением перед ним."""
+        if not self.bot_client or not self.profile.owner_id:
+            return
+        try:
+            await self.bot_client.send_file(self.profile.owner_id, path)
+        except Exception as e:
+            log.warning("[%s] ошибка доставки стикера: %s", self.profile.name, e)
+
     @staticmethod
     def _quote(text, limit=2000):
         """Текст в виде HTML-цитаты (или '(пусто)', если текста нет)."""
@@ -145,12 +155,16 @@ class Capturer:
             where = f" в «{util.html_escape(row['chat_title'])}»" if row["chat_title"] else ""
             typ = f" ({util.media_label(row['media_type'])})" if row["media_type"] else ""
             head = f"{who} удалил(а) 1 сообщение{typ}{where} \U0001F5D1"
+            body = head + (f"\n\n{self._quote(row['text'])}" if row["text"] else "")
             media_path = row["media_path"]
-            if media_path and os.path.exists(media_path):
-                caption = head + (f"\n\n{self._quote(row['text'])}" if row["text"] else "")
-                await self._send_media(media_path, caption)
+            has_media = media_path and os.path.exists(media_path)
+            if has_media and row["media_type"] == "sticker":
+                # У стикера нет подписи — сначала текст «кто удалил», потом сам стикер.
+                await self._send_text(body)
+                await self._send_sticker(media_path)
+            elif has_media:
+                await self._send_media(media_path, body)
             else:
-                body = head + (f"\n\n{self._quote(row['text'])}" if row["text"] else "")
                 await self._send_text(body)
 
     async def _on_edited(self, event):
