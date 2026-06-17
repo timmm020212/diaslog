@@ -100,7 +100,7 @@ async def amain():
             await event.answer()
             return
         key = bot_ui.parse_toggle(data)
-        if key:
+        if key and key in bot_ui.CB_TOGGLE:
             st.toggle(key)
             await show_settings(event, label, st)
         await event.answer()

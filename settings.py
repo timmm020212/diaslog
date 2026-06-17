@@ -37,6 +37,8 @@ class Settings:
         )
 
     def save(self):
+        if self.path is None:
+            return  # in-memory дефолт (терминальный режим) — некуда сохранять
         tmp = self.path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump({k: getattr(self, k) for k in FIELDS}, f)
