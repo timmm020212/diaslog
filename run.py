@@ -185,7 +185,8 @@ async def amain():
         reply = await manager.feed_message(event.sender_id, event.raw_text)
         if reply:
             still = event.sender_id in manager.wizards
-            buttons = bot_ui.wizard_cancel_buttons() if still else None
+            buttons = (bot_ui.wizard_cancel_buttons() if still
+                       else bot_ui.welcome_buttons(is_admin(event)))
             await event.respond(reply, parse_mode="html", buttons=buttons)
 
     bot.add_event_handler(on_start, events.NewMessage(pattern="/start"))

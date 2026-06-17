@@ -125,6 +125,8 @@ class AccountManager:
             if wiz.step == "password":
                 try:
                     await wiz.client.sign_in(password=text.strip())
+                except FloodWaitError:
+                    raise
                 except Exception as e:
                     return f"Пароль не подошёл: {e}. Попробуй ещё раз."
                 return await self._finalize(user_id, wiz)
