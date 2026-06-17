@@ -35,6 +35,15 @@ async def _safe_answer(event, *args, **kwargs):
         pass
 
 
+async def _safe_edit(event, *args, **kwargs):
+    """Редактирование сообщения, устойчивое к повторному нажатию (двойной тап даёт
+    MessageNotModified/устаревший id) — глотаем эти ошибки."""
+    try:
+        await event.edit(*args, **kwargs)
+    except (MessageNotModifiedError, MessageIdInvalidError):
+        pass
+
+
 async def amain():
     found = profiles.discover()
     bot_cfg = profiles.load_bot()
@@ -95,7 +104,8 @@ async def amain():
                 await event.edit(bot_ui.admin_text(manager.labels()), parse_mode="html",
                                  buttons=bot_ui.admin_buttons())
             elif kind == "add":
-                await manager.begin_add(event.sender_id)
+                await event.edit(bot_ui.connect_method_text(), parse_mode="html",
+                                 buttons=bot_ui.connect_method_buttons())
             elif kind == "remove":
                 await event.edit("Выбери аккаунт для удаления:",
                                  buttons=bot_ui.remove_list_buttons(manager.list_items()))
@@ -108,10 +118,6 @@ async def amain():
                 ok = await manager.remove(arg)
                 await event.edit("✅ Аккаунт удалён." if ok else "Аккаунт не найден.",
                                  buttons=bot_ui.admin_buttons())
-            elif kind == "cancel":
-                await manager.cancel(event.sender_id)
-                await event.edit(bot_ui.WELCOME, parse_mode="html",
-                                 buttons=bot_ui.welcome_buttons(True))
         except (MessageNotModifiedError, MessageIdInvalidError):
             pass  # сообщение не изменилось/устарело — игнорируем
 
@@ -121,14 +127,37 @@ async def amain():
 
     async def on_callback(event):
         data = event.data
+        admin = is_admin(event)
         if data == bot_ui.CB_BACK:
-            await event.edit(bot_ui.WELCOME, parse_mode="html",
-                             buttons=bot_ui.welcome_buttons(is_admin(event)))
+            await _safe_edit(event, bot_ui.WELCOME, parse_mode="html",
+                             buttons=bot_ui.welcome_buttons(admin))
+            await _safe_answer(event)
+            return
+        # публичное подключение и отмена — доступно всем
+        if data == bot_ui.CB_CONNECT:
+            await _safe_edit(event, bot_ui.connect_method_text(), parse_mode="html",
+                             buttons=bot_ui.connect_method_buttons())
+            await _safe_answer(event)
+            return
+        if data == bot_ui.CB_CONN_CODE:
+            reply = await manager.begin_code(event.sender_id)
+            await event.respond(reply, parse_mode="html",
+                                buttons=bot_ui.wizard_cancel_buttons())
+            await _safe_answer(event)
+            return
+        if data == bot_ui.CB_CONN_QR:
+            await manager.begin_qr(event.sender_id)
+            await _safe_answer(event)
+            return
+        if data == bot_ui.CB_ADMIN_CANCEL:
+            await manager.cancel(event.sender_id)
+            await _safe_edit(event, bot_ui.WELCOME, parse_mode="html",
+                             buttons=bot_ui.welcome_buttons(admin))
             await _safe_answer(event)
             return
         action = bot_ui.parse_admin(data)
         if action is not None:
-            if not is_admin(event):
+            if not admin:
                 await _safe_answer(event, "Нет доступа.", alert=True)
                 return
             await handle_admin(event, action)
@@ -149,8 +178,6 @@ async def amain():
         await _safe_answer(event)
 
     async def on_message(event):
-        if not is_admin(event):
-            return
         if event.raw_text.startswith("/"):
             return
         if event.sender_id not in manager.wizards:
@@ -159,7 +186,7 @@ async def amain():
         if reply:
             still = event.sender_id in manager.wizards
             buttons = (bot_ui.wizard_cancel_buttons() if still
-                       else bot_ui.admin_buttons())
+                       else bot_ui.welcome_buttons(is_admin(event)))
             await event.respond(reply, parse_mode="html", buttons=buttons)
 
     bot.add_event_handler(on_start, events.NewMessage(pattern="/start"))
