@@ -26,6 +26,15 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(me
 log = logging.getLogger("diaslog.run")
 
 
+async def _safe_answer(event, *args, **kwargs):
+    """Гасит «часики» на кнопке. Токен мог протухнуть (медленная операция или
+    переподключение бота) — тогда answer() кидает QueryIdInvalidError; глотаем."""
+    try:
+        await event.answer(*args, **kwargs)
+    except Exception:
+        pass
+
+
 async def amain():
     found = profiles.discover()
     bot_cfg = profiles.load_bot()
@@ -80,6 +89,7 @@ async def amain():
 
     async def handle_admin(event, action):
         kind, arg = action
+        await _safe_answer(event)  # гасим часики сразу, пока токен свеж (до медленного connect)
         try:
             if kind == "open":
                 await event.edit(bot_ui.admin_text(manager.labels()), parse_mode="html",
@@ -105,9 +115,7 @@ async def amain():
                 await event.edit(bot_ui.WELCOME, parse_mode="html",
                                  buttons=bot_ui.welcome_buttons(True))
         except (MessageNotModifiedError, MessageIdInvalidError):
-            pass  # сообщение не изменилось/устарело — просто гасим «часики»
-        finally:
-            await event.answer()
+            pass  # сообщение не изменилось/устарело — игнорируем
 
     async def on_start(event):
         await event.respond(bot_ui.WELCOME, parse_mode="html",
@@ -118,29 +126,29 @@ async def amain():
         if data == bot_ui.CB_BACK:
             await event.edit(bot_ui.WELCOME, parse_mode="html",
                              buttons=bot_ui.welcome_buttons(is_admin(event)))
-            await event.answer()
+            await _safe_answer(event)
             return
         action = bot_ui.parse_admin(data)
         if action is not None:
             if not is_admin(event):
-                await event.answer("Нет доступа.", alert=True)
+                await _safe_answer(event, "Нет доступа.", alert=True)
                 return
             await handle_admin(event, action)
             return
         entry = manager.registry.get(event.sender_id)
         if entry is None:
-            await event.answer("К тебе не привязан аккаунт.", alert=True)
+            await _safe_answer(event, "К тебе не привязан аккаунт.", alert=True)
             return
         label, st = entry
         if data == bot_ui.CB_OPEN:
             await show_settings(event, label, st)
-            await event.answer()
+            await _safe_answer(event)
             return
         key = bot_ui.parse_toggle(data)
         if key and key in bot_ui.CB_TOGGLE:
             st.toggle(key)
             await show_settings(event, label, st)
-        await event.answer()
+        await _safe_answer(event)
 
     async def on_message(event):
         if not is_admin(event):
