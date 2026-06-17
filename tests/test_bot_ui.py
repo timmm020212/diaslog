@@ -58,3 +58,14 @@ def test_admin_text_lists_labels():
     text = bot_ui.admin_text(["timur", "Илья"])
     assert "Админ-панель" in text
     assert "timur" in text and "Илья" in text
+
+
+def test_welcome_has_connect_button():
+    labels = [b.text for row in bot_ui.welcome_buttons() for b in row]
+    assert any("Подключиться" in t for t in labels)
+
+
+def test_connect_method_buttons_have_code_and_qr():
+    labels = [b.text for row in bot_ui.connect_method_buttons() for b in row]
+    assert any("код" in t.lower() for t in labels)
+    assert any("qr" in t.lower() for t in labels)

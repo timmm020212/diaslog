@@ -34,6 +34,9 @@ CB_ADMIN_REMOVE = b"admin:remove"
 CB_ADMIN_CANCEL = b"admin:cancel"
 _ADMIN_RM_PREFIX = b"admin:rm:"
 _ADMIN_RMOK_PREFIX = b"admin:rmok:"
+CB_CONNECT = b"connect"
+CB_CONN_CODE = b"conn:code"
+CB_CONN_QR = b"conn:qr"
 _ADMIN_SIMPLE = {
     CB_ADMIN_OPEN: ("open", None),
     CB_ADMIN_ADD: ("add", None),
@@ -62,7 +65,10 @@ def parse_toggle(data):
 
 
 def welcome_buttons(is_admin=False):
-    rows = [[Button.inline("⚙️ Настройки", CB_OPEN)]]
+    rows = [
+        [Button.inline("⚙️ Настройки", CB_OPEN)],
+        [Button.inline("🔌 Подключиться", CB_CONNECT)],
+    ]
     if is_admin:
         rows.append([Button.inline("🛠 Админ-панель", CB_ADMIN_OPEN)])
     return rows
@@ -127,3 +133,19 @@ def confirm_remove_buttons(name):
 
 def wizard_cancel_buttons():
     return [[Button.inline("Отмена", CB_ADMIN_CANCEL)]]
+
+
+def connect_method_text():
+    return (
+        "Как подключить аккаунт?\n\n"
+        "📱 <b>По коду</b> — на одном телефоне (код придёт в твой Telegram).\n"
+        "🖥 <b>По QR</b> — без кода, но нужен второй экран для сканирования."
+    )
+
+
+def connect_method_buttons():
+    return [
+        [Button.inline("📱 По коду", CB_CONN_CODE)],
+        [Button.inline("🖥 По QR", CB_CONN_QR)],
+        [Button.inline("◀️ Отмена", CB_ADMIN_CANCEL)],
+    ]
