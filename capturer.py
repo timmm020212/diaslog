@@ -91,7 +91,7 @@ class Capturer:
             else:
                 await self._send_text(head + "\n(не удалось скачать ⚠️)")
         elif self.profile.cache_media and kind in (
-                "photo", "video", "voice", "video_note", "document", "gif"):
+                "photo", "video", "voice", "video_note", "document", "gif", "sticker"):
             media_path = await self._download(msg)
 
         self.store.save_message(
