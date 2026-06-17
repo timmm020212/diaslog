@@ -73,6 +73,7 @@ class Profile:
         self.media_dir = os.path.join(self.data_dir, "media")
         self.db_path = os.path.join(self.data_dir, "cache.db")
         self.user_session = os.path.join(self.data_dir, "user_session")
+        self.settings_path = os.path.join(self.data_dir, "settings.json")
         os.makedirs(self.media_dir, exist_ok=True)
 
     @property

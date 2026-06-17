@@ -14,15 +14,22 @@ import logging
 from telethon import TelegramClient, events
 
 import util
+from settings import Settings
 
 log = logging.getLogger("diaslog.capturer")
 
+# Медиа, которые качаем у входящих, чтобы прислать удалённый файл.
+CACHEABLE_MEDIA = ("photo", "video", "voice", "video_note", "document", "gif", "sticker")
+
 
 class Capturer:
-    def __init__(self, profile, store_factory, bot_client=None):
+    def __init__(self, profile, store_factory, bot_client=None, settings=None):
         self.profile = profile
         self._store_factory = store_factory  # вызывается в потоке с циклом asyncio
         self.bot_client = bot_client  # общий бот-доставщик (один на всех); None при входе
+        # Настройки фильтрации (общий объект с обработчиком кнопок в run.py).
+        # None (терминальный вход) = всё включено по умолчанию.
+        self.settings = settings or Settings(path=None)
         self.store = None
         self.user_client = None
         self.running = False
@@ -65,6 +72,8 @@ class Capturer:
 
     # ---------- обработчики ----------
     async def _on_new(self, event):
+        if not self.settings.enabled:
+            return
         if not (event.is_private or event.is_group):
             return
         msg = event.message
@@ -72,16 +81,10 @@ class Capturer:
         sname = util.real_name(sender)
         uname = util.username_of(sender)
         kind = util.media_kind(msg)
-        media_path = None
-
-        chat_title = None
-        if event.is_group:
-            chat = await event.get_chat()
-            chat_title = getattr(chat, "title", None)
 
         if util.is_view_once(msg):
-            if not event.is_private:
-                return  # в группах одноразовые медиа не ловим
+            if not (self.settings.wants_view_once() and event.is_private):
+                return  # одноразовые выключены или это группа — не трогаем
             media_path = await self._download(msg)
             head = (f"\U0001F441 {util.mention_html(sname, uname)} прислал(а) "
                     f"одноразовое {util.media_label(kind)} \U0001F525")
@@ -90,8 +93,18 @@ class Capturer:
                 await self._send_media(media_path, caption)
             else:
                 await self._send_text(head + "\n(не удалось скачать ⚠️)")
-        elif self.profile.cache_media and kind in (
-                "photo", "video", "voice", "video_note", "document", "gif", "sticker"):
+            return  # одноразовое эфемерно — в кэш не кладём
+
+        if not self.settings.cache_incoming():
+            return  # ни удалённые, ни изменённые не нужны — не сохраняем
+
+        chat_title = None
+        if event.is_group:
+            chat = await event.get_chat()
+            chat_title = getattr(chat, "title", None)
+
+        media_path = None
+        if self.settings.wants_deleted() and self.profile.cache_media and kind in CACHEABLE_MEDIA:
             media_path = await self._download(msg)
 
         self.store.save_message(
@@ -102,6 +115,8 @@ class Capturer:
         )
 
     async def _on_deleted(self, event):
+        if not self.settings.wants_deleted():
+            return
         chat_id = event.chat_id  # для супергрупп/каналов задан, иначе None
         for msg_id in event.deleted_ids:
             if chat_id is not None:
@@ -123,6 +138,8 @@ class Capturer:
                 await self._send_text(body)
 
     async def _on_edited(self, event):
+        if not self.settings.enabled:
+            return
         if not (event.is_private or event.is_group):
             return
         msg = event.message
@@ -131,15 +148,18 @@ class Capturer:
         if row is not None:
             old_text = row["text"] or ""
             if old_text != new_text:
-                who = util.mention_html(row["sender_name"], row["sender_username"])
-                where = f" в «{util.html_escape(row['chat_title'])}»" if row["chat_title"] else ""
-                await self._send_text(
-                    f"✏️ {who} изменил(а) сообщение{where}\n\n"
-                    f"Было:\n{self._quote(old_text)}\n"
-                    f"Стало:\n{self._quote(new_text)}"
-                )
-            self.store.update_text(event.chat_id, msg.id, new_text)
+                if self.settings.wants_edited():
+                    who = util.mention_html(row["sender_name"], row["sender_username"])
+                    where = f" в «{util.html_escape(row['chat_title'])}»" if row["chat_title"] else ""
+                    await self._send_text(
+                        f"✏️ {who} изменил(а) сообщение{where}\n\n"
+                        f"Было:\n{self._quote(old_text)}\n"
+                        f"Стало:\n{self._quote(new_text)}"
+                    )
+                self.store.update_text(event.chat_id, msg.id, new_text)  # держим кэш актуальным
         else:
+            if not self.settings.cache_incoming():
+                return
             sender = await event.get_sender()
             chat_title = None
             if event.is_group:
@@ -180,7 +200,7 @@ class Capturer:
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
         log.info("[%s] запущен как %s", self.profile.name, self.me_name)
 
-        if self.bot_client and self.profile.owner_id:
+        if self.bot_client and self.profile.owner_id and self.settings.enabled:
             try:
                 await self.bot_client.send_message(
                     self.profile.owner_id,

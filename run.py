@@ -13,25 +13,17 @@ import asyncio
 import logging
 
 from telethon import TelegramClient, events
+from telethon.tl.functions.bots import SetBotCommandsRequest
+from telethon.tl.types import BotCommand, BotCommandScopeDefault
 
 import profiles
+import bot_ui
+from settings import Settings
 from store import Store
 from capturer import Capturer
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger("diaslog.run")
-
-WELCOME = (
-    "\U0001F575 Привет! Это <b>DIASLOG INTERCEPT</b>.\n\n"
-    "Я приношу тебе то, что пытаются скрыть в Telegram:\n"
-    "\U0001F5D1 удалённые сообщения\n"
-    "✏️ изменённые сообщения\n"
-    "\U0001F441 одноразовые фото и видео"
-)
-
-
-async def _on_start(event):
-    await event.reply(WELCOME, parse_mode="html")
 
 
 async def amain():
@@ -51,9 +43,16 @@ async def amain():
         return
 
     bot = TelegramClient(bot_cfg.session, bot_cfg.api_id, bot_cfg.api_hash)
-    bot.add_event_handler(_on_start, events.NewMessage(pattern="/start"))
     await bot.start(bot_token=bot_cfg.token)
+    try:
+        await bot(SetBotCommandsRequest(
+            scope=BotCommandScopeDefault(), lang_code="",
+            commands=[BotCommand("start", "Меню и настройки")]))
+    except Exception as e:
+        log.warning("Не выставить команды бота (кнопка «Меню»): %s", e)
     log.info("Общий бот-доставщик поднят.")
+
+    registry = {}  # owner_id -> (label, Settings) — общий объект Settings с капчурером
 
     started = []
     for name, prof in found.items():
@@ -67,12 +66,47 @@ async def amain():
             log.warning("[%s] нет сессии. Войди один раз: python main.py %s",
                         name, "" if name == "default" else name)
             continue
-        cap = Capturer(prof, Store, bot_client=bot)
+        st = Settings.load(prof.settings_path)
+        cap = Capturer(prof, Store, bot_client=bot, settings=st)
         try:
             await cap.start()
             started.append(cap)
+            registry[prof.owner_id] = (cap.me_name or prof.label, st)
         except Exception as e:
             log.warning("[%s] не удалось запустить: %s", name, e)
+
+    async def on_start(event):
+        await event.respond(bot_ui.WELCOME, parse_mode="html",
+                            buttons=bot_ui.welcome_buttons())
+
+    async def show_settings(event, label, st):
+        await event.edit(bot_ui.settings_text(label, st), parse_mode="html",
+                         buttons=bot_ui.settings_buttons(st))
+
+    async def on_callback(event):
+        data = event.data
+        if data == bot_ui.CB_BACK:
+            await event.edit(bot_ui.WELCOME, parse_mode="html",
+                             buttons=bot_ui.welcome_buttons())
+            await event.answer()
+            return
+        entry = registry.get(event.sender_id)
+        if entry is None:
+            await event.answer("К тебе не привязан аккаунт.", alert=True)
+            return
+        label, st = entry
+        if data == bot_ui.CB_OPEN:
+            await show_settings(event, label, st)
+            await event.answer()
+            return
+        key = bot_ui.parse_toggle(data)
+        if key and key in bot_ui.CB_TOGGLE:
+            st.toggle(key)
+            await show_settings(event, label, st)
+        await event.answer()
+
+    bot.add_event_handler(on_start, events.NewMessage(pattern="/start"))
+    bot.add_event_handler(on_callback, events.CallbackQuery())
 
     if started:
         log.info("Запущено аккаунтов: %d. Слежу за чатами, доставляю в Telegram.", len(started))
