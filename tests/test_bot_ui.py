@@ -35,3 +35,26 @@ def test_settings_buttons_include_groups():
 def test_parse_toggle_returns_none_for_others():
     assert bot_ui.parse_toggle(b"open_settings") is None
     assert bot_ui.parse_toggle(b"back") is None
+
+
+def test_welcome_buttons_admin_flag():
+    admin = [btn.text for row in bot_ui.welcome_buttons(is_admin=True) for btn in row]
+    plain = [btn.text for row in bot_ui.welcome_buttons(is_admin=False) for btn in row]
+    assert any("Админ" in t for t in admin)
+    assert not any("Админ" in t for t in plain)
+
+
+def test_parse_admin_actions():
+    assert bot_ui.parse_admin(b"admin:open") == ("open", None)
+    assert bot_ui.parse_admin(b"admin:add") == ("add", None)
+    assert bot_ui.parse_admin(b"admin:remove") == ("remove", None)
+    assert bot_ui.parse_admin(b"admin:cancel") == ("cancel", None)
+    assert bot_ui.parse_admin(b"admin:rm:id5") == ("rm", "id5")
+    assert bot_ui.parse_admin(b"admin:rmok:id5") == ("rmok", "id5")
+    assert bot_ui.parse_admin(b"toggle:deleted") is None
+
+
+def test_admin_text_lists_labels():
+    text = bot_ui.admin_text(["timur", "Илья"])
+    assert "Админ-панель" in text
+    assert "timur" in text and "Илья" in text
