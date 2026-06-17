@@ -18,9 +18,8 @@ from telethon.tl.types import BotCommand, BotCommandScopeDefault
 
 import profiles
 import bot_ui
-from settings import Settings
 from store import Store
-from capturer import Capturer
+from admin import AccountManager
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger("diaslog.run")
@@ -52,9 +51,8 @@ async def amain():
         log.warning("Не выставить команды бота (кнопка «Меню»): %s", e)
     log.info("Общий бот-доставщик поднят.")
 
-    registry = {}  # owner_id -> (label, Settings) — общий объект Settings с капчурером
+    manager = AccountManager(bot, bot_cfg, Store)
 
-    started = []
     for name, prof in found.items():
         if not prof.configured:
             log.warning("[%s] не настроен (нет API_ID / API_HASH) — пропускаю.", name)
@@ -66,31 +64,64 @@ async def amain():
             log.warning("[%s] нет сессии. Войди один раз: python main.py %s",
                         name, "" if name == "default" else name)
             continue
-        st = Settings.load(prof.settings_path)
-        cap = Capturer(prof, Store, bot_client=bot, settings=st)
         try:
-            await cap.start()
-            started.append(cap)
-            registry[prof.owner_id] = (cap.me_name or prof.label, st)
+            await manager.start_profile(prof)
         except Exception as e:
             log.warning("[%s] не удалось запустить: %s", name, e)
 
-    async def on_start(event):
-        await event.respond(bot_ui.WELCOME, parse_mode="html",
-                            buttons=bot_ui.welcome_buttons())
+    def is_admin(event):
+        return bool(bot_cfg.admin_id) and event.sender_id == bot_cfg.admin_id
 
     async def show_settings(event, label, st):
         await event.edit(bot_ui.settings_text(label, st), parse_mode="html",
                          buttons=bot_ui.settings_buttons(st))
 
+    async def handle_admin(event, action):
+        kind, arg = action
+        if kind == "open":
+            await event.edit(bot_ui.admin_text(manager.labels()), parse_mode="html",
+                             buttons=bot_ui.admin_buttons())
+        elif kind == "add":
+            prompt = await manager.begin_add(event.sender_id)
+            await event.edit(prompt, parse_mode="html",
+                             buttons=bot_ui.wizard_cancel_buttons())
+        elif kind == "remove":
+            await event.edit("Выбери аккаунт для удаления:",
+                             buttons=bot_ui.remove_list_buttons(manager.list_items()))
+        elif kind == "rm":
+            cap = manager.accounts.get(arg)
+            label = (cap.me_name if cap else None) or arg
+            await event.edit(f"Точно удалить «{label}»? Сотрутся сессия и кэш.",
+                             buttons=bot_ui.confirm_remove_buttons(arg))
+        elif kind == "rmok":
+            ok = await manager.remove(arg)
+            await event.edit("✅ Аккаунт удалён." if ok else "Аккаунт не найден.",
+                             buttons=bot_ui.admin_buttons())
+        elif kind == "cancel":
+            await manager.cancel(event.sender_id)
+            await event.edit(bot_ui.WELCOME, parse_mode="html",
+                             buttons=bot_ui.welcome_buttons(True))
+        await event.answer()
+
+    async def on_start(event):
+        await event.respond(bot_ui.WELCOME, parse_mode="html",
+                            buttons=bot_ui.welcome_buttons(is_admin(event)))
+
     async def on_callback(event):
         data = event.data
         if data == bot_ui.CB_BACK:
             await event.edit(bot_ui.WELCOME, parse_mode="html",
-                             buttons=bot_ui.welcome_buttons())
+                             buttons=bot_ui.welcome_buttons(is_admin(event)))
             await event.answer()
             return
-        entry = registry.get(event.sender_id)
+        action = bot_ui.parse_admin(data)
+        if action is not None:
+            if not is_admin(event):
+                await event.answer("Нет доступа.", alert=True)
+                return
+            await handle_admin(event, action)
+            return
+        entry = manager.registry.get(event.sender_id)
         if entry is None:
             await event.answer("К тебе не привязан аккаунт.", alert=True)
             return
@@ -105,13 +136,27 @@ async def amain():
             await show_settings(event, label, st)
         await event.answer()
 
+    async def on_message(event):
+        if not is_admin(event):
+            return
+        if event.raw_text.startswith("/"):
+            return
+        if event.sender_id not in manager.wizards:
+            return
+        reply = await manager.feed_message(event.sender_id, event.raw_text)
+        if reply:
+            await event.respond(reply, parse_mode="html",
+                                buttons=bot_ui.wizard_cancel_buttons())
+
     bot.add_event_handler(on_start, events.NewMessage(pattern="/start"))
     bot.add_event_handler(on_callback, events.CallbackQuery())
+    bot.add_event_handler(on_message, events.NewMessage())
 
-    if started:
-        log.info("Запущено аккаунтов: %d. Слежу за чатами, доставляю в Telegram.", len(started))
+    if manager.accounts:
+        log.info("Запущено аккаунтов: %d. Слежу за чатами, доставляю в Telegram.",
+                 len(manager.accounts))
     else:
-        log.warning("Ни один аккаунт не запущен. Поправь конфиги/сессии и перезапусти.")
+        log.warning("Ни один аккаунт не запущен (можно добавить через админ-панель).")
     await asyncio.Event().wait()  # держим цикл живым — на нём работают обработчики Telethon
 
 
