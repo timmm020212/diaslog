@@ -8,5 +8,6 @@ data/
 data-*/
 *.session
 *.session-journal
+login_local.py
 __pycache__/
 *.pyc
