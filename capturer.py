@@ -86,6 +86,8 @@ class Capturer:
         if msg.out:
             return  # своё исходящее сообщение — не наша добыча
         sender = await event.get_sender()
+        if getattr(sender, "bot", False):
+            return  # сообщения ботов (в т.ч. доставщика) не перехватываем
         sname = util.real_name(sender)
         uname = util.username_of(sender)
         kind = util.media_kind(msg)
@@ -163,6 +165,9 @@ class Capturer:
         msg = event.message
         if msg.out:
             return  # своё изменённое сообщение — не присылаем себе же
+        sender = await event.get_sender()
+        if getattr(sender, "bot", False):
+            return  # бот (в т.ч. доставщик правит кнопки/настройки) — не наша добыча
         new_text = msg.message or ""
         row = self.store.get_message(event.chat_id, msg.id)
         if row is not None:
@@ -180,7 +185,6 @@ class Capturer:
         else:
             if not self.settings.cache_incoming():
                 return
-            sender = await event.get_sender()
             chat_title = None
             if event.is_group:
                 chat = await event.get_chat()
