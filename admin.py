@@ -123,7 +123,10 @@ class AccountManager:
                     return "Код неверный или истёк. Введи ещё раз (разбито)."
                 return await self._finalize(user_id, wiz)
             if wiz.step == "password":
-                await wiz.client.sign_in(password=text.strip())
+                try:
+                    await wiz.client.sign_in(password=text.strip())
+                except Exception as e:
+                    return f"Пароль не подошёл: {e}. Попробуй ещё раз."
                 return await self._finalize(user_id, wiz)
         except FloodWaitError as e:
             await self.cancel(user_id)
