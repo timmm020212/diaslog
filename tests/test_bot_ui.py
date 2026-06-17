@@ -24,6 +24,12 @@ def test_settings_text_disabled_shows_red():
 def test_parse_toggle_extracts_key():
     assert bot_ui.parse_toggle(b"toggle:deleted") == "deleted"
     assert bot_ui.parse_toggle(b"toggle:view_once") == "view_once"
+    assert bot_ui.parse_toggle(b"toggle:groups") == "groups"
+
+
+def test_settings_buttons_include_groups():
+    labels = [btn.text for row in bot_ui.settings_buttons(_settings()) for btn in row]
+    assert any("Группы" in label for label in labels)
 
 
 def test_parse_toggle_returns_none_for_others():

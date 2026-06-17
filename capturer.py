@@ -34,6 +34,7 @@ class Capturer:
         self.user_client = None
         self.running = False
         self.me_name = None
+        self.me_id = None  # id самого аккаунта — чтобы не реагировать на свои сообщения
         self.last_error = None
         self._cleanup_task = None
 
@@ -76,7 +77,11 @@ class Capturer:
             return
         if not (event.is_private or event.is_group):
             return
+        if event.is_group and not self.settings.groups:
+            return  # слежка за группами выключена
         msg = event.message
+        if msg.out:
+            return  # своё исходящее сообщение — не наша добыча
         sender = await event.get_sender()
         sname = util.real_name(sender)
         uname = util.username_of(sender)
@@ -125,6 +130,10 @@ class Capturer:
                 row = self.store.get_nonchannel_message(msg_id)
             if not row:
                 continue
+            if row["sender_id"] == self.me_id:
+                continue  # своё сообщение — не реагируем на собственные удаления
+            if row["chat_title"] and not self.settings.groups:
+                continue  # слежка за группами выключена (chat_title есть только у групп)
             who = util.mention_html(row["sender_name"], row["sender_username"])
             where = f" в «{util.html_escape(row['chat_title'])}»" if row["chat_title"] else ""
             typ = f" ({util.media_label(row['media_type'])})" if row["media_type"] else ""
@@ -142,7 +151,11 @@ class Capturer:
             return
         if not (event.is_private or event.is_group):
             return
+        if event.is_group and not self.settings.groups:
+            return  # слежка за группами выключена
         msg = event.message
+        if msg.out:
+            return  # своё изменённое сообщение — не присылаем себе же
         new_text = msg.message or ""
         row = self.store.get_message(event.chat_id, msg.id)
         if row is not None:
@@ -196,6 +209,7 @@ class Capturer:
 
         me = await self.user_client.get_me()
         self.me_name = util.display_name(me)
+        self.me_id = getattr(me, "id", None)
         self.running = True
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
         log.info("[%s] запущен как %s", self.profile.name, self.me_name)

@@ -1,8 +1,8 @@
 """Настройки фильтрации перехвата — на каждый аккаунт отдельно.
 
 Хранятся в data_dir/settings.json на диске /data. Определяют, что присылать:
-удалённые / изменённые / одноразовые, плюс общий выключатель enabled.
-По умолчанию всё включено (поведение как раньше).
+удалённые / изменённые / одноразовые, ловить ли группы (groups) и общий
+выключатель enabled. По умолчанию всё включено (поведение как раньше).
 
 Предикаты (wants_* / cache_incoming) — единственный источник правды о гейтинге,
 их использует capturer. Хранение и предикаты держим вместе, презентацию — в bot_ui.
@@ -10,16 +10,18 @@
 import json
 import os
 
-FIELDS = ("enabled", "deleted", "edited", "view_once")
+FIELDS = ("enabled", "deleted", "edited", "view_once", "groups")
 
 
 class Settings:
-    def __init__(self, path, enabled=True, deleted=True, edited=True, view_once=True):
+    def __init__(self, path, enabled=True, deleted=True, edited=True, view_once=True,
+                 groups=True):
         self.path = path
         self.enabled = enabled
         self.deleted = deleted
         self.edited = edited
         self.view_once = view_once
+        self.groups = groups
 
     @classmethod
     def load(cls, path):
@@ -34,6 +36,7 @@ class Settings:
             deleted=bool(data.get("deleted", True)),
             edited=bool(data.get("edited", True)),
             view_once=bool(data.get("view_once", True)),
+            groups=bool(data.get("groups", True)),
         )
 
     def save(self):

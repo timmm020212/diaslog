@@ -22,6 +22,7 @@ CB_TOGGLE = {
     "deleted": _TOGGLE_PREFIX + b"deleted",
     "edited": _TOGGLE_PREFIX + b"edited",
     "view_once": _TOGGLE_PREFIX + b"view_once",
+    "groups": _TOGGLE_PREFIX + b"groups",
 }
 
 
@@ -55,6 +56,7 @@ def settings_buttons(s):
         [Button.inline(master, CB_TOGGLE["enabled"])],
         [Button.inline(f"🗑 Удалённые {_mark(s.deleted)}", CB_TOGGLE["deleted"]),
          Button.inline(f"✏️ Изменённые {_mark(s.edited)}", CB_TOGGLE["edited"])],
-        [Button.inline(f"👁 Одноразовые {_mark(s.view_once)}", CB_TOGGLE["view_once"])],
+        [Button.inline(f"👁 Одноразовые {_mark(s.view_once)}", CB_TOGGLE["view_once"]),
+         Button.inline(f"👥 Группы {_mark(s.groups)}", CB_TOGGLE["groups"])],
         [Button.inline("◀️ Назад", CB_BACK)],
     ]
