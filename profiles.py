@@ -44,6 +44,7 @@ class BotConfig:
         self.token = (vals.get("BOT_TOKEN") or "").strip()
         self.api_id = _int(vals.get("API_ID"))
         self.api_hash = (vals.get("API_HASH") or "").strip()
+        self.admin_id = _int(vals.get("ADMIN_ID"))
         bot_dir = os.path.join(DATA_ROOT or BASE_DIR, "bot")
         os.makedirs(bot_dir, exist_ok=True)
         self.session = os.path.join(bot_dir, "bot_session")
@@ -110,3 +111,35 @@ def discover():
             name = fname[len(".env."):]
             found[name] = Profile(name, os.path.join(CONFIG_DIR, fname))
     return found
+
+
+def env_path_for(name):
+    """Путь к конфигу аккаунта: у default это .env, иначе .env.<name>."""
+    fname = ".env" if name == "default" else f".env.{name}"
+    return os.path.join(CONFIG_DIR, fname)
+
+
+def write_profile_env(name, api_id, api_hash, owner_id,
+                      cache_media=True, retention_days=7):
+    """Записать конфиг динамически добавленного аккаунта на диск."""
+    path = env_path_for(name)
+    lines = [
+        f"API_ID={api_id}",
+        f"API_HASH={api_hash}",
+        f"OWNER_ID={owner_id}",
+        f"CACHE_MEDIA={'true' if cache_media else 'false'}",
+        f"RETENTION_DAYS={retention_days}",
+    ]
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    return path
+
+
+def delete_profile(profile):
+    """Удалить конфиг аккаунта и его папку данных (сессия/кэш/медиа)."""
+    import shutil
+    try:
+        os.remove(env_path_for(profile.name))
+    except FileNotFoundError:
+        pass
+    shutil.rmtree(profile.data_dir, ignore_errors=True)
