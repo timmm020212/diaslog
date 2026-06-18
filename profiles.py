@@ -41,9 +41,10 @@ class BotConfig:
 
     def __init__(self, env_file):
         vals = dotenv_values(env_file)
-        self.token = (vals.get("BOT_TOKEN") or "").strip()
-        self.api_id = _int(vals.get("API_ID"))
-        self.api_hash = (vals.get("API_HASH") or "").strip()
+        self.token = (vals.get("BOT_TOKEN") or os.getenv("BOT_TOKEN") or "").strip()
+        # api_id/api_hash бота: из .env.bot ИЛИ из переменной окружения контейнера
+        self.api_id = _int(vals.get("API_ID") or os.getenv("API_ID"))
+        self.api_hash = (vals.get("API_HASH") or os.getenv("API_HASH") or "").strip()
         self.admin_id = _int(vals.get("ADMIN_ID"))
         # Токен/порт relay можно задать ИЛИ в .env.bot, ИЛИ переменной окружения
         # контейнера (в панели DockHost — так проще, без правки файла на диске).
