@@ -41,17 +41,18 @@ class BotConfig:
 
     def __init__(self, env_file):
         vals = dotenv_values(env_file)
-        self.token = (vals.get("BOT_TOKEN") or os.getenv("BOT_TOKEN") or "").strip()
-        # api_id/api_hash бота: из .env.bot ИЛИ из переменной окружения контейнера
-        self.api_id = _int(vals.get("API_ID") or os.getenv("API_ID"))
-        self.api_hash = (vals.get("API_HASH") or os.getenv("API_HASH") or "").strip()
+        # Приоритет у переменной окружения (env-var переопределяет файл /data/.env.bot,
+        # как принято в контейнерах), затем — значение из файла.
+        self.token = (os.getenv("BOT_TOKEN") or vals.get("BOT_TOKEN") or "").strip()
+        self.api_id = _int(os.getenv("API_ID") or vals.get("API_ID"))
+        self.api_hash = (os.getenv("API_HASH") or vals.get("API_HASH") or "").strip()
         self.admin_id = _int(vals.get("ADMIN_ID"))
         # Токен/порт relay можно задать ИЛИ в .env.bot, ИЛИ переменной окружения
         # контейнера (в панели DockHost — так проще, без правки файла на диске).
-        self.relay_token = (vals.get("AUTH_RELAY_TOKEN")
-                            or os.getenv("AUTH_RELAY_TOKEN") or "").strip()
-        self.relay_port = _int(vals.get("AUTH_RELAY_PORT")
-                               or os.getenv("AUTH_RELAY_PORT"), 8080)
+        self.relay_token = (os.getenv("AUTH_RELAY_TOKEN")
+                            or vals.get("AUTH_RELAY_TOKEN") or "").strip()
+        self.relay_port = _int(os.getenv("AUTH_RELAY_PORT")
+                               or vals.get("AUTH_RELAY_PORT"), 8080)
         bot_dir = os.path.join(DATA_ROOT or BASE_DIR, "bot")
         os.makedirs(bot_dir, exist_ok=True)
         self.session = os.path.join(bot_dir, "bot_session")
