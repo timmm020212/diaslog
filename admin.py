@@ -232,43 +232,26 @@ class AccountManager:
     @staticmethod
     def _qr_caption():
         return (
-            "Подтверди вход в аккаунт:\n\n"
-            "📱 <b>Если этот аккаунт открыт в Telegram на ЭТОМ телефоне</b> — нажми "
-            "кнопку «✅ Подтвердить вход» ниже и подтверди. Камера и второй экран "
-            "НЕ нужны.\n\n"
-            "🖥 <b>Если аккаунт на другом устройстве</b> — отсканируй QR там: "
-            "Настройки → Устройства → Подключить устройство.\n\n"
-            "Ссылка/QR обновляются сами (~30 c)."
+            "Подтверди вход — <b>нужен второй экран</b> (Telegram разрешает "
+            "подтверждение только сканированием камерой):\n\n"
+            "1. Открой ЭТОТ QR на втором устройстве (или попроси показать).\n"
+            "2. На телефоне аккаунта: Настройки → Устройства → Подключить "
+            "устройство → отсканируй QR камерой.\n\n"
+            "Хочешь без второго экрана — подключайся «По коду».\n"
+            "QR обновляется сам (~30 c)."
         )
 
     async def _send_or_edit_qr(self, user_id, wiz, edit):
-        """Отправить/обновить экран QR с кнопкой-ссылкой tg://login (один тап,
-        без второго экрана). Если Telegram не примет tg:// в кнопке — запасной
-        вид: ссылка в тексте + Отмена, QR-картинка остаётся для скана."""
+        """Отправить/обновить экран QR (картинка + Отмена)."""
         caption = self._qr_caption()
         png = self._qr_png(wiz.qr.url)
+        buttons = bot_ui.wizard_cancel_buttons()
         try:
-            buttons = bot_ui.qr_login_buttons(wiz.qr.url)
             if edit:
                 await wiz.qr_msg.edit(caption, file=png, parse_mode="html", buttons=buttons)
             else:
                 wiz.qr_msg = await self.bot.send_file(
                     user_id, png, caption=caption, parse_mode="html", buttons=buttons)
-            return
-        except (MessageNotModifiedError, MessageIdInvalidError):
-            return
-        except Exception as e:  # noqa: BLE001 — tg:// в кнопке мог быть отклонён
-            log.warning("QR-кнопка tg://login не принята (%s) — запасной вид", e)
-        cap = caption + f'\n\n🔗 <a href="{wiz.qr.url}">Подтвердить вход</a> (или скан QR)'
-        try:
-            if edit:
-                await wiz.qr_msg.edit(cap, file=self._qr_png(wiz.qr.url),
-                                      parse_mode="html",
-                                      buttons=bot_ui.wizard_cancel_buttons())
-            else:
-                wiz.qr_msg = await self.bot.send_file(
-                    user_id, self._qr_png(wiz.qr.url), caption=cap, parse_mode="html",
-                    buttons=bot_ui.wizard_cancel_buttons())
         except (MessageNotModifiedError, MessageIdInvalidError):
             pass
 

@@ -134,28 +134,19 @@ def wizard_cancel_buttons():
     return [[Button.inline("Отмена", CB_ADMIN_CANCEL)]]
 
 
-def qr_login_buttons(login_url):
-    """Кнопка-ссылка tg://login + Отмена. Тап на телефоне, где залогинен
-    аккаунт, открывает «Подтвердить вход» — без камеры и второго экрана."""
-    return [
-        [Button.url("✅ Подтвердить вход на этом телефоне", login_url)],
-        [Button.inline("Отмена", CB_ADMIN_CANCEL)],
-    ]
-
-
 def connect_method_text():
     return (
         "Как подключить аккаунт?\n\n"
-        "✅ <b>По кнопке</b> (рекомендуется) — без кода и без второго экрана: "
-        "нажмёшь «Подтвердить вход» прямо в Telegram этого аккаунта.\n"
-        "📱 <b>По коду</b> — код придёт в Telegram аккаунта (может не дойти из-за "
-        "ограничений Telegram)."
+        "📱 <b>По коду</b> — на одном телефоне: код придёт в Telegram этого "
+        "аккаунта (чат «Telegram»), введёшь его здесь. Второй экран не нужен.\n"
+        "🖥 <b>По QR</b> — нужен второй экран: сканируешь QR камерой телефона "
+        "(Telegram не даёт подтвердить вход иначе)."
     )
 
 
 def connect_method_buttons():
     return [
-        [Button.inline("✅ По кнопке (без 2-го экрана)", CB_CONN_QR)],
-        [Button.inline("📱 По коду", CB_CONN_CODE)],
+        [Button.inline("📱 По коду (один телефон)", CB_CONN_CODE)],
+        [Button.inline("🖥 По QR (нужен 2-й экран)", CB_CONN_QR)],
         [Button.inline("◀️ Отмена", CB_ADMIN_CANCEL)],
     ]
