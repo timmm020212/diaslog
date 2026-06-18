@@ -45,8 +45,8 @@ def load_env():
 
 
 async def post(session, base, token, path, payload):
-    async with session.post(f"{base}{path}", json=payload,
-                            headers={"Authorization": f"Bearer {token}"}) as r:
+    # токен в query: шлюз DockHost срезает заголовок Authorization
+    async with session.post(f"{base}{path}?token={token}", json=payload) as r:
         return await r.json()
 
 
@@ -155,8 +155,7 @@ async def main():
     async with aiohttp.ClientSession() as session:
         while True:
             try:
-                async with session.get(f"{base}/jobs",
-                        headers={"Authorization": f"Bearer {token}"}) as r:
+                async with session.get(f"{base}/jobs?token={token}") as r:
                     data = await r.json()
                 for job in data.get("jobs", []):
                     handler = HANDLERS.get(job.get("status"))
