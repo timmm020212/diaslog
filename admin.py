@@ -14,9 +14,7 @@ import logging
 
 import qrcode
 from telethon import TelegramClient
-from telethon.errors import (SessionPasswordNeededError, PhoneCodeInvalidError,
-                             PhoneCodeExpiredError, PhoneNumberInvalidError,
-                             FloodWaitError)
+from telethon.errors import SessionPasswordNeededError, FloodWaitError
 
 import profiles
 import bot_ui
@@ -41,9 +39,10 @@ class Wizard:
         self.client = client
         self.mode = mode          # "code" | "qr"
         self.step = "phone" if mode == "code" else "qr"
-        # code-режим:
+        # code-режим (через воркера):
         self.phone = None
         self.phone_code_hash = None
+        self.job = None          # auth_relay.Job — вход по коду делает воркер
         # qr-режим:
         self.qr = None
         self.qr_msg = None
@@ -58,6 +57,10 @@ class AccountManager:
         self.accounts = {}    # name -> Capturer
         self.registry = {}    # owner_id -> (label, Settings)
         self.wizards = {}     # user_id -> Wizard
+        self.relay = None     # auth_relay.AuthRelay — задаётся в run.py (вход по коду)
+
+    def _is_admin(self, user_id):
+        return bool(self.bot_cfg.admin_id) and user_id == self.bot_cfg.admin_id
 
     # ---------- жизненный цикл аккаунтов ----------
     async def start_profile(self, profile):
@@ -91,12 +94,16 @@ class AccountManager:
         session = os.path.join(profiles.CONFIG_DIR, f".login_{user_id}")
         return TelegramClient(session, self.bot_cfg.api_id, self.bot_cfg.api_hash)
 
-    # ---------- подключение по коду ----------
+    # ---------- подключение по коду (через локального воркера) ----------
     async def begin_code(self, user_id):
         await self.cancel(user_id)
-        client = self._new_client(user_id)
-        await client.connect()
-        self.wizards[user_id] = Wizard(client, "code")
+        if self.relay is None:
+            return ("Вход по коду сейчас недоступен (не запущен воркер авторизации). "
+                    "Подключись по QR — кнопка «Назад» → QR.")
+        job = self.relay.create_job(user_id, self.bot_cfg.api_id, self.bot_cfg.api_hash)
+        wiz = Wizard(None, "code")
+        wiz.job = job
+        self.wizards[user_id] = wiz
         return ("Пришли <b>номер телефона</b> аккаунта (с +). Код придёт в Telegram "
                 "этого аккаунта — в чат «Telegram».")
 
@@ -104,24 +111,10 @@ class AccountManager:
         wiz = self.wizards.get(user_id)
         if wiz is None:
             return None
+        if wiz.job is not None:               # код-путь: реальный вход делает воркер
+            return self._feed_code_relay(wiz, text)
+        # QR-путь: сюда доходит только шаг пароля 2FA
         try:
-            if wiz.step == "phone":
-                wiz.phone = text.strip()
-                sent = await wiz.client.send_code_request(wiz.phone)
-                wiz.phone_code_hash = sent.phone_code_hash
-                wiz.step = "code"
-                return ("Код пришёл в Telegram этого аккаунта (чат «Telegram»). "
-                        "Введи его <b>разбито</b> — например <code>1 2 3 4 5</code>.")
-            if wiz.step == "code":
-                try:
-                    await wiz.client.sign_in(phone=wiz.phone, code=extract_code(text),
-                                             phone_code_hash=wiz.phone_code_hash)
-                except SessionPasswordNeededError:
-                    wiz.step = "password"
-                    return "У аккаунта включена 2FA. Пришли пароль облака."
-                except (PhoneCodeInvalidError, PhoneCodeExpiredError):
-                    return "Код неверный или истёк. Введи ещё раз (разбито)."
-                return await self._finalize(user_id, wiz)
             if wiz.step == "password":
                 try:
                     await wiz.client.sign_in(password=text.strip())
@@ -133,14 +126,97 @@ class AccountManager:
         except FloodWaitError as e:
             await self.cancel(user_id)
             return f"Telegram просит подождать {e.seconds} c. Попробуй позже."
-        except PhoneNumberInvalidError:
-            await self.cancel(user_id)
-            return "Неверный номер телефона. Начни заново."
         except Exception as e:
             await self.cancel(user_id)
-            log.warning("вход по коду: %s", e)
+            log.warning("вход: %s", e)
             return f"Ошибка входа: {e}. Начни заново."
         return None
+
+    def _feed_code_relay(self, wiz, text):
+        """Ввод пользователя в код-визарде кладём в job — воркер подхватит."""
+        job = wiz.job
+        if wiz.step == "phone":
+            job.phone = text.strip()
+            job.status = "phone_submitted"
+            wiz.step = "await_code"
+            return ("Запрашиваю код… он придёт в Telegram этого аккаунта (чат «Telegram»). "
+                    "Подожди пару секунд.")
+        if wiz.step == "code":
+            job.code = extract_code(text)
+            job.status = "code_submitted"
+            wiz.step = "await_signin"
+            return "Проверяю код…"
+        if wiz.step == "password":
+            job.password = text.strip()
+            job.status = "password_submitted"
+            wiz.step = "await_signin"
+            return "Проверяю пароль…"
+        return "Подожди, обрабатываю предыдущий шаг…"
+
+    # ---------- отчёты воркера (вызывает auth_relay) ----------
+    async def on_relay_status(self, job, status, error):
+        """Воркер сообщил о ходе входа — двигаем визард и пишем пользователю."""
+        user_id = job.user_id
+        wiz = self.wizards.get(user_id)
+        if status == "code_sent":
+            if wiz:
+                wiz.step = "code"
+            await self.bot.send_message(
+                user_id, "Код отправлен в Telegram этого аккаунта (чат «Telegram»). "
+                "Введи его <b>разбито</b> — например <code>1 2 3 4 5</code>.",
+                parse_mode="html", buttons=bot_ui.wizard_cancel_buttons())
+        elif status == "need_password":
+            if wiz:
+                wiz.step = "password"
+            await self.bot.send_message(
+                user_id, "У аккаунта включена 2FA. Пришли пароль облака.",
+                buttons=bot_ui.wizard_cancel_buttons())
+        elif status == "error":
+            self.wizards.pop(user_id, None)
+            await self.bot.send_message(
+                user_id, f"Ошибка входа: {error or 'неизвестно'}. Нажми «Подключиться» заново.",
+                buttons=bot_ui.welcome_buttons(self._is_admin(user_id)))
+
+    async def on_relay_session(self, job, me_id, me_name, session_str):
+        """Воркер прислал готовую сессию — сохраняем и запускаем слежение."""
+        user_id = job.user_id
+        self.wizards.pop(user_id, None)
+        if not session_str:
+            await self.bot.send_message(user_id, "Пустая сессия от воркера. Начни заново.")
+            return
+        name = f"id{me_id}"
+        if name in self.accounts:
+            await self.remove(name)
+        env_path = profiles.write_profile_env(name, job.api_id, job.api_hash, me_id)
+        profile = profiles.Profile(name, env_path)
+        self._write_string_session(session_str, profile.user_session)
+        try:
+            cap = await self.start_profile(profile)
+            label = cap.me_name or me_name or name
+            msg = (f"✅ Аккаунт <b>{label}</b> подключён. Перехваты (удалённые/изменённые) "
+                   "будут приходить сюда.")
+        except Exception as e:  # noqa: BLE001
+            log.warning("запуск после сессии: %s", e)
+            msg = f"Сессия получена, но запустить слежение не вышло: {e}"
+        await self.bot.send_message(user_id, msg, parse_mode="html",
+                                    buttons=bot_ui.welcome_buttons(self._is_admin(user_id)))
+
+    @staticmethod
+    def _write_string_session(session_str, session_path):
+        """Строковую сессию (от воркера) сохранить как файловую SQLite-сессию,
+        которую читает Capturer. Переносимо между Windows и Linux."""
+        from telethon.sessions import StringSession, SQLiteSession
+        for suffix in (".session", ".session-journal", ".session-wal", ".session-shm"):
+            try:
+                os.remove(session_path + suffix)
+            except OSError:
+                pass
+        ss = StringSession(session_str)
+        sql = SQLiteSession(session_path)   # допишет .session к пути
+        sql.set_dc(ss.dc_id, ss.server_address, ss.port)
+        sql.auth_key = ss.auth_key
+        sql.save()
+        sql.close()
 
     # ---------- подключение по QR ----------
     @staticmethod

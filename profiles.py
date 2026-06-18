@@ -45,6 +45,8 @@ class BotConfig:
         self.api_id = _int(vals.get("API_ID"))
         self.api_hash = (vals.get("API_HASH") or "").strip()
         self.admin_id = _int(vals.get("ADMIN_ID"))
+        self.relay_token = (vals.get("AUTH_RELAY_TOKEN") or "").strip()
+        self.relay_port = _int(vals.get("AUTH_RELAY_PORT"), 8080)
         bot_dir = os.path.join(DATA_ROOT or BASE_DIR, "bot")
         os.makedirs(bot_dir, exist_ok=True)
         self.session = os.path.join(bot_dir, "bot_session")

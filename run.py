@@ -21,6 +21,7 @@ import profiles
 import bot_ui
 from store import Store
 from admin import AccountManager
+from auth_relay import AuthRelay
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s")
 log = logging.getLogger("diaslog.run")
@@ -72,6 +73,16 @@ async def amain():
     log.info("Общий бот-доставщик поднят.")
 
     manager = AccountManager(bot, bot_cfg, Store)
+
+    if bot_cfg.relay_token:
+        relay = AuthRelay(bot_cfg.relay_token, manager, bot)
+        manager.relay = relay
+        try:
+            await relay.start(port=bot_cfg.relay_port)
+        except Exception as e:
+            log.warning("Не удалось поднять auth-relay (вход по коду): %s", e)
+    else:
+        log.info("AUTH_RELAY_TOKEN не задан — вход по коду выключен, доступен только QR.")
 
     for name, prof in found.items():
         if not prof.configured:
