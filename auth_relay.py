@@ -37,6 +37,7 @@ class Job:
         self.status = "need_phone"
         self.dispatched_status = None  # какой статус уже отдан воркеру (чтобы не дублировать)
         self.error = None
+        self.reason = None             # напр. "bad_code" — неверный/истёкший код
 
 
 class AuthRelay:
@@ -90,6 +91,7 @@ class AuthRelay:
         job.status = status
         job.dispatched_status = status  # отчёт-статус воркеру не отдаём
         job.error = data.get("error")
+        job.reason = data.get("reason")
         try:
             await self.manager.on_relay_status(job, status, job.error)
         except Exception as e:  # noqa: BLE001

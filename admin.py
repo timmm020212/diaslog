@@ -8,6 +8,8 @@
 """
 import os
 import io
+import re
+import json
 import time
 import asyncio
 import logging
@@ -28,9 +30,39 @@ QR_TOKEN_TIMEOUT = 30   # сек на одно ожидание скана до 
 QR_TOTAL_TIMEOUT = 180  # сек общий лимит на подтверждение входа по QR
 
 
+CODE_COOLDOWN = 24 * 3600  # сек: блок входа по коду на сутки после неверного кода
+
+
 def extract_code(text):
     """Выпарить цифры кода из 'разбитого' ввода ('1 2 3 4 5' -> '12345')."""
     return "".join(ch for ch in text if ch.isdigit())
+
+
+def is_spaced_code(text):
+    """Код принимаем ТОЛЬКО раздельными цифрами через пробел: '1 2 3 4 5'.
+    Слитный ввод ('12345') Telegram может счесть «утёкшим» кодом — отклоняем,
+    чтобы не сжечь попытку."""
+    return bool(re.fullmatch(r"\s*\d(?:\s+\d){3,}\s*", text or ""))
+
+
+def _cooldown_path():
+    return os.path.join(profiles.CONFIG_DIR, "code_cooldown.json")
+
+
+def _load_cooldowns():
+    try:
+        with open(_cooldown_path(), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_cooldowns(data):
+    try:
+        with open(_cooldown_path(), "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except OSError as e:
+        log.warning("сохранение cooldown кода: %s", e)
 
 
 class Wizard:
@@ -95,12 +127,28 @@ class AccountManager:
         session = os.path.join(profiles.CONFIG_DIR, f".login_{user_id}")
         return TelegramClient(session, self.bot_cfg.api_id, self.bot_cfg.api_hash)
 
+    # ---------- лимит после неверного кода ----------
+    def _code_lock_remaining(self, user_id):
+        until = _load_cooldowns().get(str(user_id), 0)
+        rem = until - time.time()
+        return int(rem) if rem > 0 else 0
+
+    def _set_code_lock(self, user_id):
+        data = _load_cooldowns()
+        data[str(user_id)] = time.time() + CODE_COOLDOWN
+        _save_cooldowns(data)
+
     # ---------- подключение по коду (через локального воркера) ----------
     async def begin_code(self, user_id):
         await self.cancel(user_id)
         if self.relay is None:
             return ("Вход по коду сейчас недоступен (не запущен воркер авторизации). "
                     "Подключись по QR — кнопка «Назад» → QR.")
+        rem = self._code_lock_remaining(user_id)
+        if rem > 0:
+            h, m = rem // 3600, (rem % 3600) // 60
+            return (f"⛔ Был неверный код — вход по коду закрыт на сутки, чтобы не вызвать "
+                    f"блокировку Telegram. Осталось ~{h} ч {m} мин. Пока подключись по QR.")
         job = self.relay.create_job(user_id, self.bot_cfg.api_id, self.bot_cfg.api_hash)
         wiz = Wizard(None, "code")
         wiz.job = job
@@ -143,6 +191,10 @@ class AccountManager:
             return ("Запрашиваю код… он придёт в Telegram этого аккаунта (чат «Telegram»). "
                     "Подожди пару секунд.")
         if wiz.step == "code":
+            if not is_spaced_code(text):
+                return ("⚠️ Введи код <b>раздельно</b>, по одной цифре через пробел — "
+                        "например <code>1 2 3 4 5</code> (слитный код Telegram считает "
+                        "«утёкшим»).")
             job.code = extract_code(text)
             job.status = "code_submitted"
             wiz.step = "await_signin"
@@ -174,9 +226,16 @@ class AccountManager:
                 buttons=bot_ui.wizard_cancel_buttons())
         elif status == "error":
             self.wizards.pop(user_id, None)
-            await self.bot.send_message(
-                user_id, f"Ошибка входа: {error or 'неизвестно'}. Нажми «Подключиться» заново.",
-                buttons=bot_ui.welcome_buttons(self._is_admin(user_id)))
+            if getattr(job, "reason", None) == "bad_code":
+                self._set_code_lock(user_id)
+                await self.bot.send_message(
+                    user_id, "❌ Код неверный. Чтобы не вызвать блокировку Telegram, вход "
+                    "по коду закрыт на <b>сутки</b>. Подключись по QR или попробуй кодом завтра.",
+                    parse_mode="html", buttons=bot_ui.welcome_buttons(self._is_admin(user_id)))
+            else:
+                await self.bot.send_message(
+                    user_id, f"Ошибка входа: {error or 'неизвестно'}. Нажми «Подключиться» заново.",
+                    buttons=bot_ui.welcome_buttons(self._is_admin(user_id)))
 
     async def on_relay_session(self, job, me_id, me_name, session_str):
         """Воркер прислал готовую сессию — сохраняем и запускаем слежение."""

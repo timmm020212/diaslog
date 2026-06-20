@@ -14,6 +14,7 @@ import logging
 from telethon import TelegramClient, events
 
 import util
+import fast_download
 from settings import Settings
 
 log = logging.getLogger("diaslog.capturer")
@@ -76,6 +77,17 @@ class Capturer:
         return f"<blockquote>{inner}</blockquote>"
 
     async def _download(self, msg):
+        # видео/файлы — пробуем параллельно (быстрее), при сбое откат на обычное
+        document = getattr(msg, "document", None)
+        if document is not None:
+            try:
+                path = await fast_download.download(
+                    self.user_client, document, self.profile.media_dir)
+                if path:
+                    return path
+            except Exception as e:  # noqa: BLE001
+                log.warning("[%s] параллельная загрузка не вышла (%s) — обычная",
+                            self.profile.name, e)
         try:
             return await self.user_client.download_media(msg, file=self.profile.media_dir)
         except Exception as e:

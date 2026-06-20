@@ -74,6 +74,7 @@ async def _finish(session, base, token, job):
 
 
 async def handle_phone(session, base, token, job):
+    log.info("получил задачу: номер %s, api_id=%s", job["phone"], job["api_id"])
     client = TelegramClient(StringSession(), int(job["api_id"]), job["api_hash"])
     await client.connect()
     try:
@@ -90,7 +91,9 @@ async def handle_phone(session, base, token, job):
         return
     CLIENTS[job["id"]] = (client, sent.phone_code_hash)
     await post(session, base, token, f"/jobs/{job['id']}/status", {"status": "code_sent"})
-    log.info("код запрошен для %s", job["phone"])
+    cur = type(sent.type).__name__ if sent.type else "?"
+    nxt = type(sent.next_type).__name__ if sent.next_type else "нет"
+    log.info("код запрошен для %s | КУДА: %s | next: %s", job["phone"], cur, nxt)
 
 
 async def handle_code(session, base, token, job):
@@ -108,7 +111,8 @@ async def handle_code(session, base, token, job):
         return
     except (PhoneCodeInvalidError, PhoneCodeExpiredError):
         await post(session, base, token, f"/jobs/{job['id']}/status",
-                   {"status": "error", "error": "код неверный или истёк"})
+                   {"status": "error", "error": "код неверный или истёк",
+                    "reason": "bad_code"})
         await _disconnect(job["id"])
         return
     except Exception as e:  # noqa: BLE001
