@@ -9,6 +9,8 @@ data/
 data-*/
 *.session
 *.session-journal
+proxies.txt
+code_cooldown.json
 login_local.py
 __pycache__/
 *.pyc

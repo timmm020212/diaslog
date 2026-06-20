@@ -16,6 +16,7 @@ import asyncio
 import logging
 import os
 import sys
+import re
 
 import aiohttp
 from telethon import TelegramClient
@@ -28,6 +29,52 @@ log = logging.getLogger("diaslog.worker")
 
 # job_id -> (TelegramClient, phone_code_hash) — держим клиента живым между шагами
 CLIENTS = {}
+
+# пул прокси для send_code (резидентные/мобильные, чтобы запросы шли с разных IP)
+PROXIES = []
+_proxy_idx = 0
+
+
+def parse_proxy(line):
+    """'socks5://user:pass@host:port' / 'http://host:port' / 'host:port' -> dict."""
+    line = line.strip()
+    if not line or line.startswith("#"):
+        return None
+    m = re.match(r"(?:(?P<scheme>socks5|socks4|http)://)?"
+                 r"(?:(?P<user>[^:@/]+):(?P<pw>[^@/]+)@)?"
+                 r"(?P<host>[^:/@]+):(?P<port>\d+)", line)
+    if not m:
+        log.warning("не разобрал прокси: %s", line)
+        return None
+    d = {"proxy_type": m.group("scheme") or "socks5",
+         "addr": m.group("host"), "port": int(m.group("port")), "rdns": True}
+    if m.group("user"):
+        d["username"] = m.group("user")
+        d["password"] = m.group("pw")
+    return d
+
+
+def load_proxies():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "proxies.txt")
+    if not os.path.exists(path):
+        return []
+    out = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            p = parse_proxy(line)
+            if p:
+                out.append(p)
+    return out
+
+
+def next_proxy():
+    """Следующий прокси по кругу (или None, если пул пуст)."""
+    global _proxy_idx
+    if not PROXIES:
+        return None
+    p = PROXIES[_proxy_idx % len(PROXIES)]
+    _proxy_idx += 1
+    return p
 
 
 def load_env():
@@ -74,8 +121,11 @@ async def _finish(session, base, token, job):
 
 
 async def handle_phone(session, base, token, job):
-    log.info("получил задачу: номер %s, api_id=%s", job["phone"], job["api_id"])
-    client = TelegramClient(StringSession(), int(job["api_id"]), job["api_hash"])
+    proxy = next_proxy()
+    log.info("получил задачу: номер %s, api_id=%s, прокси=%s",
+             job["phone"], job["api_id"], proxy["addr"] if proxy else "нет")
+    client = TelegramClient(StringSession(), int(job["api_id"]), job["api_hash"],
+                            proxy=proxy)
     await client.connect()
     try:
         sent = await client.send_code_request(job["phone"])
@@ -155,7 +205,9 @@ async def main():
     if not base or not token:
         sys.exit("Задай RELAY_URL и RELAY_TOKEN (в .env.worker рядом со скриптом).")
 
-    log.info("Воркер запущен. Опрашиваю %s каждые %.0f c. Не закрывай это окно.", base, poll)
+    PROXIES.extend(load_proxies())
+    log.info("Воркер запущен. Опрашиваю %s каждые %.0f c. Прокси в пуле: %d. "
+             "Не закрывай это окно.", base, poll, len(PROXIES))
     async with aiohttp.ClientSession() as session:
         while True:
             try:
